@@ -1,37 +1,56 @@
 from telethon import TelegramClient
-from telethon.tl.functions.channels import GetFullChannelRequest
+from telethon.tl.functions.messages import GetFullChatRequest
+from telethon.tl.types import PeerChat, PeerChannel
 import asyncio
+import re
 import os
-from dotenv import load_dotenv
+from trading_logic import buy_token
 
-load_dotenv()
+# Isi dengan data dari my.telegram.org
+api_id = int(os.getenv("API_ID"))
+api_hash = os.getenv("API_HASH")
+session_name = "session"  # simpan session file
+group_username = os.getenv("GROUP_USERNAME")  # contoh: 'RaydiumNewTokenGroup'
 
-API_ID = int(os.getenv("API_ID"))
-API_HASH = os.getenv("API_HASH")
-GROUP_USERNAME = os.getenv("GROUP_USERNAME")  # contoh: "nama_group_kamu"
+client = TelegramClient(session_name, api_id, api_hash)
 
-client = TelegramClient('session', API_ID, API_HASH)
+def extract_ca(text):
+    pattern = r'[1-9A-HJ-NP-Za-km-z]{32,44}'
+    match = re.search(pattern, text)
+    if match:
+        return match.group(0)
+    else:
+        return None
 
-async def check_pinned():
+async def get_pinned_message():
     try:
-        entity = await client.get_entity(GROUP_USERNAME)
-        full_channel = await client(GetFullChannelRequest(channel=entity))
-        pinned_msg_id = full_channel.full_chat.pinned_msg_id
+        entity = await client.get_entity(group_username)
+        full_chat = await client(GetFullChatRequest(entity))
+        pinned = full_chat.full_chat.pinned_msg_id
 
-        if pinned_msg_id:
-            pinned_msg = await client.get_messages(entity, ids=pinned_msg_id)
-            print("Pinned message:", pinned_msg.message)
+        if pinned:
+            pinned_msg = await client.get_messages(entity, ids=pinned)
+            print(f"Pinned message: {pinned_msg.text}")
+
+            ca = extract_ca(pinned_msg.text)
+            if ca:
+                print(f"✅ CA ditemukan: {ca}")
+                buy_token(ca)
+            else:
+                print("❌ Tidak ditemukan CA di pesan pinned")
         else:
-            print("Tidak ada pinned message.")
+            print("Belum ada pinned message.")
     except Exception as e:
-        print("Error:", e)
+        print(f"Error: {e}")
 
 async def main():
     await client.start()
-    while True:
-        await check_pinned()
-        print("✅ Heartbeat...")
-        await asyncio.sleep(5)
+    print("✅ Bot pinned watcher berjalan...")
 
-with client:
-    client.loop.run_until_complete(main())
+    while True:
+        await get_pinned_message()
+        print("✅ Heartbeat...")
+        await asyncio.sleep(5)  # interval pengecekan 5 detik
+
+if __name__ == "__main__":
+    asyncio.run(main())
