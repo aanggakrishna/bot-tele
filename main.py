@@ -13,7 +13,8 @@ import aiocron
 from db_manager import init_db, get_db, add_trade, get_active_trades, update_trade_status, get_total_active_trades_count
 import db_manager # Import penuh untuk Trade class
 import solana_service
-from solana.publickey import PublicKey
+# OLD: from solana.publickey import PublicKey
+from solders.pubkey import Pubkey as PublicKey # Import PublicKey dari solders
 
 # --- Logging Configuration ---
 logger.add("bot.log", rotation="10 MB")
