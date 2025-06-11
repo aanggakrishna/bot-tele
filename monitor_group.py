@@ -1,53 +1,38 @@
-import asyncio
+import config
 import time
 import logging
-import re
 from telethon import TelegramClient, events
-import config
 from trade import buy_token
 
-# Setup logging ke file dan console
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler("bot.log"),
-        logging.StreamHandler()
-    ]
-)
+logging.basicConfig(filename='logs/bot.log', level=logging.INFO, format='%(asctime)s - %(message)s')
 
-client = TelegramClient(config.SESSION_NAME, config.API_ID, config.API_HASH)
+client = TelegramClient('session', config.API_ID, config.API_HASH)
 
-# Fungsi parsing address Solana dari message
+last_pin_id = None
+
+@client.on(events.NewMessage(chats=config.GROUP_ID))
+async def handler(event):
+    global last_pin_id
+    if event.message.pinned:
+        if event.message.id != last_pin_id:
+            last_pin_id = event.message.id
+            message = event.message.message
+            logging.info(f"Pinned Message: {message}")
+            print(f"Pinned Message: {message}")
+            ca = extract_ca(message)
+            if ca:
+                buy_token(ca)
+
 def extract_ca(text):
-    pattern = r'([1-9A-HJ-NP-Za-km-z]{32,44})'
-    match = re.search(pattern, text)
-    return match.group(1) if match else None
+    for word in text.split():
+        if len(word) == 44:
+            return word
+    return None
 
-@client.on(events.NewMessage(chats=config.GROUP_ID, func=lambda e: e.message.pinned))
-async def pinned_handler(event):
-    message = event.message
-    logging.info(f"📌 Pinned message: {message.text}")
-    
-    ca = extract_ca(message.text)
-    if ca:
-        logging.info(f"🎯 Dapat CA: {ca}")
-        await buy_token(ca)
-    else:
-        logging.warning("❌ Tidak ditemukan contract address.")
+client.start()
+print("🚀 Bot is running...")
+logging.info("Bot is running...")
 
-# Heartbeat loop setiap 2 detik
-async def heartbeat():
-    while True:
-        logging.info("💓 Bot running... menunggu pinned message...")
-        await asyncio.sleep(2)
-
-async def main():
-    await client.start()
-    await asyncio.gather(
-        client.run_until_disconnected(),
-        heartbeat()
-    )
-
-if __name__ == '__main__':
-    asyncio.run(main())
+while True:
+    client.run_until_disconnected()
+    time.sleep(2)
