@@ -49,7 +49,12 @@ def load_wallet_from_file(private_key_path: str) -> Keypair:
         with open(private_key_path, 'r') as f:
             data = json.load(f)
             if isinstance(data, list):
-                return Keypair.from_secret_key(bytes(data))
+                # Ubah cara membuat Keypair dari list byte.
+                # solders.keypair.Keypair dapat dibuat langsung dari bytes secret key.
+                secret_key_bytes = bytes(data)
+                if len(secret_key_bytes) != 64: # Secret key harus 64 byte
+                    raise ValueError(f"Invalid secret key length: {len(secret_key_bytes)} bytes. Expected 64 bytes for a full secret key.")
+                return Keypair.from_bytes(secret_key_bytes) # <-- BARIS INI YANG BENAR UNTUK SOLDERS
             elif isinstance(data, str):
                 return Keypair.from_base58_string(data)
             else:
