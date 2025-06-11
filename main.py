@@ -77,78 +77,75 @@ def extract_solana_ca(message_text):
 # --- Telegram Event Handler ---
 @client.on(events.ChatAction)
 async def pinned_message_handler(event):
-    # Periksa apakah event adalah event "pinned message" yang sebenarnya
-    # Ini menangani kasus di mana event.pinned tidak ada atau event.action tidak sesuai
-    if not hasattr(event, 'pinned') or not event.pinned:
-        logger.debug(f"Skipping ChatAction event: Not a pinned message or no 'pinned' attribute. Event type: {type(event.action)}")
-        return # Abaikan event yang bukan pinned message
+    # Logika pengecekan yang lebih robust
+    # Pastikan event memiliki 'action' dan 'pinned' dan 'message'
+    if not hasattr(event, 'action') or \
+       not hasattr(event.action, 'message') or \
+       not hasattr(event, 'pinned') or \
+       not event.pinned:
+        logger.debug(f"Skipping ChatAction event: Not a relevant pinned message action. Event type: {type(event.action) if hasattr(event, 'action') else 'N/A'}")
+        return # Abaikan event yang tidak memenuhi kriteria
 
     # Pastikan ini adalah event dari grup yang benar
     if event.peer_id.channel_id != abs(GROUP_ID):
         logger.debug(f"Skipping ChatAction event: Not from target group. Event group ID: {event.peer_id.channel_id}")
         return
 
-    # Dapatkan pesan yang di-pin. Di Telethon, pesan yang di-pin ada di event.action.message
-    # if event.action is a ChannelPinnedMessage or MessagePinned
-    if hasattr(event.action, 'message') and event.action.message:
-        pinned_message = event.action.message
-        message_text = pinned_message.message # Konten teks dari pesan
+    # Jika semua pemeriksaan lolos, ini adalah pinned message yang valid
+    pinned_message = event.action.message
+    message_text = pinned_message.message # Konten teks dari pesan
 
-        logger.info(f"New Pinned Message detected in group {GROUP_ID}: {message_text[:200]}...")
-        await send_dm_to_owner(f"New Pinned Message detected: {message_text[:200]}...")
+    logger.info(f"New Pinned Message detected in group {GROUP_ID}: {message_text[:200]}...")
+    await send_dm_to_owner(f"New Pinned Message detected: {message_text[:200]}...")
 
-        ca = extract_solana_ca(message_text)
-        if ca:
-            logger.info(f"Detected potential Solana CA: {ca}")
-            await send_dm_to_owner(f"Detected Solana CA: {ca}")
+    ca = extract_solana_ca(message_text)
+    if ca:
+        logger.info(f"Detected potential Solana CA: {ca}")
+        await send_dm_to_owner(f"Detected Solana CA: {ca}")
 
-            db = next(get_db())
-            try:
-                active_trades_count = get_total_active_trades_count(db)
-                if active_trades_count >= MAX_PURCHASES_ALLOWED:
-                    await send_dm_to_owner(f"Purchase limit reached ({MAX_PURCHASES_ALLOWED} active purchases). Cannot buy more until existing positions are sold or cleared.")
-                    logger.warning("Purchase limit reached. Skipping purchase.")
-                    return
+        db = next(get_db())
+        try:
+            active_trades_count = get_total_active_trades_count(db)
+            if active_trades_count >= MAX_PURCHASES_ALLOWED:
+                await send_dm_to_owner(f"Purchase limit reached ({MAX_PURCHASES_ALLOWED} active purchases). Cannot buy more until existing positions are sold or cleared.")
+                logger.warning("Purchase limit reached. Skipping purchase.")
+                return
 
-                existing_trade = db.query(db_manager.Trade).filter(db_manager.Trade.token_mint_address == ca).first()
-                if existing_trade and existing_trade.status == "active":
-                    await send_dm_to_owner(f"Token {ca} is already an active trade. Skipping purchase.")
-                    logger.warning(f"Token {ca} is already an active trade. Skipping purchase.")
-                    return
+            existing_trade = db.query(db_manager.Trade).filter(db_manager.Trade.token_mint_address == ca).first()
+            if existing_trade and existing_trade.status == "active":
+                await send_dm_to_owner(f"Token {ca} is already an active trade. Skipping purchase.")
+                logger.warning(f"Token {ca} is already an active trade. Skipping purchase.")
+                return
 
-                # --- Initiate Solana Buy Logic ---
-                buy_result = await solana_service.buy_token_solana(ca)
+            # --- Initiate Solana Buy Logic ---
+            buy_result = await solana_service.buy_token_solana(ca)
 
-                if buy_result:
-                    add_trade(
-                        db,
-                        token_mint_address=buy_result['token_mint_address'],
-                        buy_price_sol=buy_result['buy_price_sol'],
-                        amount_bought_token=buy_result['amount_bought_token'],
-                        wallet_token_account=buy_result['wallet_token_account'],
-                        buy_tx_signature=buy_result['buy_tx_signature']
-                    )
-                    await send_dm_to_owner(
-                        f"✅ **Beli Berhasil!**\n"
-                        f"Token: `{buy_result['token_mint_address']}`\n"
-                        f"Jumlah Dibeli: `{buy_result['amount_bought_token']:.6f}`\n"
-                        f"Harga Beli (SOL): `{buy_result['buy_price_sol']:.8f}`\n"
-                        f"Tx Sig: `{buy_result['buy_tx_signature'][:10]}...` [explorer](https://solscan.io/tx/{buy_result['buy_tx_signature']}{'?cluster=devnet' if RPC_URL == 'https://api.devnet.solana.com' else ''})\n"
-                        f"Total Pembelian Aktif: {get_total_active_trades_count(db)}/{MAX_PURCHASES_ALLOWED}"
-                    )
-                    logger.info(f"Successfully bought {ca}. Added to DB. Current active trades: {get_total_active_trades_count(db)}")
-                else:
-                    await send_dm_to_owner(f"❌ **Pembelian Gagal** untuk token: `{ca}`. Cek log bot.")
-                    logger.error(f"Failed to buy token: {ca}")
-            finally:
-                db.close()
-        else:
-            logger.info("No Solana CA found in the pinned message.")
-            await send_dm_to_owner("No Solana CA found in the pinned message.")
+            if buy_result:
+                add_trade(
+                    db,
+                    token_mint_address=buy_result['token_mint_address'],
+                    buy_price_sol=buy_result['buy_price_sol'],
+                    amount_bought_token=buy_result['amount_bought_token'],
+                    wallet_token_account=buy_result['wallet_token_account'],
+                    buy_tx_signature=buy_result['buy_tx_signature']
+                )
+                await send_dm_to_owner(
+                    f"✅ **Beli Berhasil!**\n"
+                    f"Token: `{buy_result['token_mint_address']}`\n"
+                    f"Jumlah Dibeli: `{buy_result['amount_bought_token']:.6f}`\n"
+                    f"Harga Beli (SOL): `{buy_result['buy_price_sol']:.8f}`\n"
+                    f"Tx Sig: `{buy_result['buy_tx_signature'][:10]}...` [explorer](https://solscan.io/tx/{buy_result['buy_tx_signature']}{'?cluster=devnet' if RPC_URL == 'https://api.devnet.solana.com' else ''})\n"
+                    f"Total Pembelian Aktif: {get_total_active_trades_count(db)}/{MAX_PURCHASES_ALLOWED}"
+                )
+                logger.info(f"Successfully bought {ca}. Added to DB. Current active trades: {get_total_active_trades_count(db)}")
+            else:
+                await send_dm_to_owner(f"❌ **Pembelian Gagal** untuk token: `{ca}`. Cek log bot.")
+                logger.error(f"Failed to buy token: {ca}")
+        finally:
+            db.close()
     else:
-        # Log jika event.action tidak memiliki atribut 'message' atau 'message' adalah None
-        logger.warning(f"ChatAction event received, but 'message' attribute missing or None. Event type: {type(event.action)}. Content: {event.action if hasattr(event, 'action') else 'N/A'}")
-
+        logger.info("No Solana CA found in the pinned message.")
+        await send_dm_to_owner("No Solana CA found in the pinned message.")
 
 # --- Scheduled Tasks (using aiocron) ---
 
