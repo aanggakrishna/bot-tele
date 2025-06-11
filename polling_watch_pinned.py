@@ -4,7 +4,7 @@ import re
 from telethon import TelegramClient
 from telethon.tl.types import Chat, Channel
 from dotenv import load_dotenv
-from telethon.tl.functions.messages import GetFullChat
+from telethon.tl.functions.messages import GetFullChatRequest
 
 # Load env
 load_dotenv()
@@ -28,9 +28,8 @@ async def check_pinned():
 
     entity = await client.get_entity(GROUP_ID)
 
-    # Gunakan GetFullChat untuk basic group
     if isinstance(entity, Chat):
-        full_chat = await client(GetFullChat(chat_id=entity.id))
+        full_chat = await client(GetFullChatRequest(chat_id=entity.id))
         pinned_msg_id = full_chat.full_chat.pinned_msg_id
     elif isinstance(entity, Channel):
         pinned_msg_id = entity.pinned_msg_id
