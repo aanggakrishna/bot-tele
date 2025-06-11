@@ -1,6 +1,0 @@
-telethon
-python-dotenv
-solders
-solana
-requests
-aiohttp
