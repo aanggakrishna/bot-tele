@@ -1,63 +1,52 @@
-import requests
 import json
-import base64
-import config
-import datetime
+import base58
+import os
 from solders.keypair import Keypair
-from solders.rpc import Client
-from solders.transaction import VersionedTransaction
+from solders.pubkey import Pubkey
+from solana.rpc.api import Client
+from dotenv import load_dotenv
 
+# Load env
+load_dotenv()
+
+RPC_URL = os.getenv("RPC_URL")
+WALLET_JSON_PATH = os.getenv("WALLET_JSON_PATH")
+
+client = Client(RPC_URL)
+
+# Load keypair dari wallet.json
 def load_wallet():
-    with open("wallet.json", "r") as f:
-        secret = json.load(f)
-    return Keypair.from_bytes(bytes(secret))
+    with open(WALLET_JSON_PATH, "r") as f:
+        key_data = json.load(f)
+    keypair = Keypair.from_bytes(bytes(key_data))
+    return keypair
 
 wallet = load_wallet()
-solana_client = Client(config.SOLANA_RPC)
 
-def log_trade(action, token_address, amount, price=None):
-    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    with open("trade_log.txt", "a") as f:
-        f.write(f"[{timestamp}] {action} | Token: {token_address} | Amount: {amount} SOL | Price: {price} SOL\n")
+# Cek balance native SOL
+def check_balance():
+    balance_result = client.get_balance(wallet.pubkey())
+    lamports = balance_result["result"]["value"]
+    sol = lamports / 10**9
+    print(f"Saldo: {sol} SOL")
+    return sol
 
-def execute_trade(token_address):
-    amount_lamports = int(config.BUY_AMOUNT_SOL * 1e9)
-    quote = requests.get(config.JUPITER_QUOTE_URL, params={
-        "inputMint": "So11111111111111111111111111111111111111112",
-        "outputMint": token_address,
-        "amount": amount_lamports,
-        "slippageBps": config.SLIPPAGE_BPS
-    }).json()
+# Dummy function beli token (nanti pakai Jupiter API buat real trading)
+def buy_token(ca):
+    print(f"[BUY] Membeli token CA: {ca}")
+    # --- nanti disini kita akan hubungkan ke Jupiter API ---
+    # sementara kita hanya simulasi
 
-    route = quote["routes"][0]
-    send_jupiter_swap(route, token_address)
-    price_in = amount_lamports / 1e9
-    log_trade("BUY", token_address, config.BUY_AMOUNT_SOL, price_in)
+# Dummy function jual token (sell 100% posisi)
+def sell_token(ca):
+    print(f"[SELL] Menjual token CA: {ca}")
+    # --- nanti juga akan konek ke Jupiter atau Raydium API ---
 
-    price_out = config.BUY_AMOUNT_SOL * config.TAKE_PROFIT_MULTIPLIER
-    sell_quote = requests.get(config.JUPITER_QUOTE_URL, params={
-        "inputMint": token_address,
-        "outputMint": "So11111111111111111111111111111111111111112",
-        "amount": int(route["outAmount"]),
-        "slippageBps": config.SLIPPAGE_BPS
-    }).json()
+if __name__ == "__main__":
+    print("✅ Wallet Address:", wallet.pubkey())
+    check_balance()
 
-    sell_route = sell_quote["routes"][0]
-    send_jupiter_swap(sell_route, token_address)
-    log_trade("SELL", token_address, config.BUY_AMOUNT_SOL, price_out)
-
-def send_jupiter_swap(route, token_address):
-    swap = requests.post(config.JUPITER_SWAP_URL, json={
-        "route": route,
-        "userPublicKey": str(wallet.pubkey()),
-        "wrapUnwrapSOL": True,
-        "feeAccount": None,
-        "asLegacyTransaction": False
-    }).json()
-
-    tx_bytes = base64.b64decode(swap["swapTransaction"])
-    tx = VersionedTransaction.deserialize(tx_bytes)
-    tx.sign([wallet])
-    raw_tx = base64.b64encode(tx.serialize()).decode()
-    resp = solana_client.send_transaction(raw_tx)
-    print("✅ Swap transaction:", resp)
+    # Simulasi trading
+    ca_address = "E2pxg6FezvFWJLoLtLqsedaZ86pgF2o3XJ6Fa59Upump"
+    buy_token(ca_address)
+    sell_token(ca_address)
