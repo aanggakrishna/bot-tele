@@ -3,18 +3,17 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Telegram config
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 
-# Admin username yang mem-pin
 ADMIN_USERNAME = "adminxx123"
+GROUP_ID = -1001915865922
 
-# Solana RPC
 SOLANA_RPC = "https://api.mainnet-beta.solana.com"
-
-# Jupiter API
 JUPITER_QUOTE_URL = "https://quote-api.jup.ag/v6/quote"
+JUPITER_SWAP_URL = "https://quote-api.jup.ag/v6/swap"
 
-# Wallet file
 WALLET_FILE = "wallet.json"
+
+BUY_AMOUNT_SOL = 0.01  # jumlah pembelian awal
+TAKE_PROFIT_MULTIPLIER = 2.0  # target take profit (100% = x2)

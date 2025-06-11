@@ -1,4 +1,8 @@
 telethon
 solana
+solders
 requests
 python-dotenv
+websocket-client
+tenacity
+base58

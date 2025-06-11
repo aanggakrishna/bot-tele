@@ -1,31 +1,30 @@
 from telethon import TelegramClient, events
-from trade import execute_trade
 import config
+from trade import execute_trade
 
 client = TelegramClient('session', config.API_ID, config.API_HASH)
 
 def extract_ca(text):
-    import re
-    match = re.search(r'CA[:\s]+([A-Za-z0-9]{32,44})', text)
-    if match:
-        return match.group(1)
+    lines = text.splitlines()
+    for line in lines:
+        if 32 <= len(line.strip()) <= 44 and line.strip().isalnum():
+            return line.strip()
     return None
 
-@client.on(events.ChatAction)
+@client.on(events.ChatAction(chats=[config.GROUP_ID]))
 async def handler(event):
     if event.pinned:
         message = await event.get_message()
         sender = await event.get_user()
         if sender.username == config.ADMIN_USERNAME:
-            print("✅ Ada pin baru dari admin!")
-            print("Pesan:", message.text)
+            print("✅ Pinned message from admin detected!")
+            print("Message:", message.text)
             ca = extract_ca(message.text)
             if ca:
-                print("🎯 Contract Address ditemukan:", ca)
+                print("🎯 CA detected:", ca)
                 execute_trade(ca)
             else:
-                print("❌ Tidak ditemukan Contract Address.")
-                
+                print("❌ CA not found.")
+
 client.start()
-print("Bot sedang berjalan...")
 client.run_until_disconnected()
