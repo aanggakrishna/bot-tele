@@ -19,14 +19,19 @@ SOLANA_REGEX = re.compile(r'\b[1-9A-HJ-NP-Za-km-z]{32,44}\b')
 async def send_owner_dm(message):
     await client.send_message(OWNER_ID, message)
 
-@client.on(events.MessagePinned)
+@client.on(events.MessageEdited)
 async def handler(event):
     if event.chat_id != GROUP_ID:
         return
 
     message = await event.get_message()
+
+    # Pastikan hanya deteksi pinned message
+    if not message.pinned:
+        return
+
     text = message.message
-    print(f"Isi message: {text}")
+    print(f"Isi pinned message: {text}")
 
     # Cari CA dengan regex
     match = SOLANA_REGEX.search(text)
