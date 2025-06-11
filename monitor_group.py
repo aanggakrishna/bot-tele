@@ -1,51 +1,35 @@
-from telethon import TelegramClient, events
-from telethon.tl.functions.messages import SendMessageRequest
-import asyncio
 import config
-from trade import execute_trade
+import asyncio
+from telethon import TelegramClient, events
+from trade import buy_token
 
 client = TelegramClient('session', config.API_ID, config.API_HASH)
 
-def extract_ca(text):
-    lines = text.splitlines()
-    for line in lines:
-        if 32 <= len(line.strip()) <= 44 and line.strip().isalnum():
-            return line.strip()
+def extract_contract_address(message_text):
+    words = message_text.split()
+    for word in words:
+        if len(word) >= 32 and word[0].isupper():
+            return word
     return None
 
 async def send_dm(message):
-    await client(SendMessageRequest(peer=config.OWNER_ID, message=message))
+    await client.send_message(config.OWNER_ID, message)
 
-@client.on(events.ChatAction(chats=[config.GROUP_ID]))
+@client.on(events.ChatAction(chats=config.GROUP_ID))
 async def handler(event):
     if event.pinned:
         message = await event.get_message()
-        sender = await event.get_user()
-        if sender.username == config.ADMIN_USERNAME:
-            print("✅ Pinned message from admin detected!")
-            print("Message:", message.text)
-            ca = extract_ca(message.text)
-            if ca:
-                print("🎯 CA detected:", ca)
-                try:
-                    execute_trade(ca)
-                    await send_dm(f"✅ Trade executed!\nCA: {ca}")
-                except Exception as e:
-                    await send_dm(f"❌ Trade failed!\nError: {str(e)}")
-            else:
-                print("❌ CA not found.")
-
-async def heartbeat():
-    while True:
-        print("⏳ Bot aktif, menunggu pinned message...")
-        await asyncio.sleep(10)
+        print("📌 Pinned message:", message.text)
+        ca = extract_contract_address(message.text)
+        if ca:
+            print("CA ditemukan:", ca)
+            buy_token(ca, lambda m: asyncio.run(send_dm(m)))
+        else:
+            print("❌ Tidak ada contract address")
 
 async def main():
     await client.start()
-    print("✅ Bot sudah terkoneksi ke Telegram.")
-    await asyncio.gather(
-        client.run_until_disconnected(),
-        heartbeat()
-    )
+    await client.run_until_disconnected()
 
-asyncio.run(main())
+if __name__ == '__main__':
+    asyncio.run(main())

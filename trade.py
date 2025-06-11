@@ -1,52 +1,94 @@
-import json
-import base58
-import os
+import requests
+import config
 from solders.keypair import Keypair
-from solders.pubkey import Pubkey
 from solana.rpc.api import Client
-from dotenv import load_dotenv
+from wallet_utils import load_wallet
+from solders.transaction import VersionedTransaction
+from base64 import b64decode
+import time
 
-# Load env
-load_dotenv()
+client = Client(config.RPC_URL)
+wallet = load_wallet(config.WALLET_JSON_PATH)
 
-RPC_URL = os.getenv("RPC_URL")
-WALLET_JSON_PATH = os.getenv("WALLET_JSON_PATH")
+JUPITER_URL = "https://quote-api.jup.ag/v6"
+purchased_tokens = {}
 
-client = Client(RPC_URL)
+def get_token_info(token_address):
+    url = f"{JUPITER_URL}/tokens"
+    tokens = requests.get(url).json()
+    for token in tokens:
+        if token["address"] == token_address:
+            return token
+    return None
 
-# Load keypair dari wallet.json
-def load_wallet():
-    with open(WALLET_JSON_PATH, "r") as f:
-        key_data = json.load(f)
-    keypair = Keypair.from_bytes(bytes(key_data))
-    return keypair
+def swap(input_mint, output_mint, amount, swap_mode="ExactIn"):
+    params = {
+        "inputMint": input_mint,
+        "outputMint": output_mint,
+        "amount": amount,
+        "slippageBps": config.SLIPPAGE_BPS,
+        "swapMode": swap_mode,
+    }
 
-wallet = load_wallet()
+    quote = requests.get(f"{JUPITER_URL}/quote", params=params).json()
+    if not quote.get("routes"):
+        print("❌ Tidak ada route swap ditemukan")
+        return None
 
-# Cek balance native SOL
-def check_balance():
-    balance_result = client.get_balance(wallet.pubkey())
-    lamports = balance_result["result"]["value"]
-    sol = lamports / 10**9
-    print(f"Saldo: {sol} SOL")
-    return sol
+    route = quote["routes"][0]
+    swap_request = {
+        "route": route,
+        "userPublicKey": str(wallet.pubkey()),
+        "wrapUnwrapSOL": True
+    }
 
-# Dummy function beli token (nanti pakai Jupiter API buat real trading)
-def buy_token(ca):
-    print(f"[BUY] Membeli token CA: {ca}")
-    # --- nanti disini kita akan hubungkan ke Jupiter API ---
-    # sementara kita hanya simulasi
+    swap_tx = requests.post(f"{JUPITER_URL}/swap", json=swap_request).json()
 
-# Dummy function jual token (sell 100% posisi)
-def sell_token(ca):
-    print(f"[SELL] Menjual token CA: {ca}")
-    # --- nanti juga akan konek ke Jupiter atau Raydium API ---
+    swap_tx_bytes = b64decode(swap_tx['swapTransaction'])
+    tx = VersionedTransaction.deserialize(swap_tx_bytes)
+    signed_tx = tx.sign([wallet])
+    raw_signed = signed_tx.serialize()
 
-if __name__ == "__main__":
-    print("✅ Wallet Address:", wallet.pubkey())
-    check_balance()
+    send_result = client.send_raw_transaction(raw_signed)
+    print(f"✅ Swap sukses: {send_result['result']}")
+    return send_result['result']
 
-    # Simulasi trading
-    ca_address = "E2pxg6FezvFWJLoLtLqsedaZ86pgF2o3XJ6Fa59Upump"
-    buy_token(ca_address)
-    sell_token(ca_address)
+def buy_token(ca, send_dm):
+    amount = int(config.BUY_AMOUNT_SOL * 10**9)
+    tx = swap("So11111111111111111111111111111111111111112", ca, amount)
+    if tx:
+        purchased_tokens[ca] = {
+            "buy_price": get_price(ca),
+            "amount_in_sol": config.BUY_AMOUNT_SOL
+        }
+        send_dm(f"✅ BUY {ca}\nTX: {tx}")
+        time.sleep(5)
+        auto_sell(ca, send_dm)
+
+def auto_sell(ca, send_dm):
+    time.sleep(20)  # tunggu pool stabil
+
+    current_price = get_price(ca)
+    buy_price = purchased_tokens[ca]["buy_price"]
+
+    if current_price >= buy_price * config.PROFIT_TARGET:
+        print(f"🎯 Profit target tercapai: {current_price} (buy: {buy_price})")
+        amount = int(purchased_tokens[ca]["amount_in_sol"] * 10**9)
+        tx = swap(ca, "So11111111111111111111111111111111111111112", amount)
+        if tx:
+            send_dm(f"✅ SELL {ca}\nTX: {tx}")
+    else:
+        print(f"⏳ Profit belum tercapai: {current_price} (target: {buy_price * config.PROFIT_TARGET})")
+
+def get_price(ca):
+    params = {
+        "inputMint": ca,
+        "outputMint": "So11111111111111111111111111111111111111112",
+        "amount": int(10**9),
+        "swapMode": "ExactIn"
+    }
+    quote = requests.get(f"{JUPITER_URL}/quote", params=params).json()
+    if quote.get("routes"):
+        out_amount = quote["routes"][0]["outAmount"]
+        return int(out_amount) / 10**9
+    return 0

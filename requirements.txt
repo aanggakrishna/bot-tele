@@ -1,8 +1,5 @@
 telethon
-solana
-solders
-requests
 python-dotenv
-websocket-client
-tenacity
-base58
+solders
+solana
+requests
