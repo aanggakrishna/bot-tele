@@ -2,7 +2,7 @@ import json
 from solana.keypair import Keypair
 from solana.rpc.api import Client
 
-# RPC endpoint Solana (pakai mainnet / devnet sesuai kebutuhan)
+# RPC endpoint Solana
 RPC_ENDPOINT = "https://api.mainnet-beta.solana.com"
 
 def load_wallet(path='wallet.json'):
