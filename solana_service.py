@@ -41,7 +41,7 @@ def init_solana_config(rpc_url: str, private_key_path: str, amount_to_buy_sol: f
         WALLET = Keypair.from_base58_string(solana_private_key_base58)
     else:
         WALLET = load_wallet_from_file(private_key_path)
-    WALLET_PUBKEY = WALLET.public_key
+    WALLET_PUBKEY = WALLET.pubkey() # <-- Ubah dari .public_key menjadi .pubkey()
     logger.info(f"Solana config initialized. Wallet: {WALLET_PUBKEY}, RPC: {rpc_url}")
 
 def load_wallet_from_file(private_key_path: str) -> Keypair:
