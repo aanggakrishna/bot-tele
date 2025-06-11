@@ -5,6 +5,7 @@ import asyncio
 import time
 from datetime import datetime, timedelta
 from telethon import TelegramClient, events
+from telethon.tl.types import ChannelPinnedMessage # Tambahkan ini
 from dotenv import load_dotenv
 from loguru import logger
 import aiocron
@@ -77,7 +78,17 @@ def extract_solana_ca(message_text):
 # --- Telegram Event Handler ---
 @client.on(events.ChatAction)
 async def pinned_message_handler(event):
-    if event.pinned and event.peer_id.channel_id == abs(GROUP_ID):
+    # Periksa apakah event adalah instance dari ChannelPinnedMessage
+    # dan apakah peer_id cocok dengan GROUP_ID Anda
+    if isinstance(event.action, ChannelPinnedMessage) and event.peer_id.channel_id == abs(GROUP_ID):
+        # Dapatkan pesan yang di-pin dari event.action.message
+        pinned_message = event.action.message # Ini adalah objek Message itu sendiri
+        message_text = pinned_message.message # Konten teks dari pesan
+
+        logger.info(f"New Pinned Message in group {GROUP_ID}: {message_text}")
+        await send_dm_to_owner(f"New Pinned Message detected: {message_text[:200]}...")
+
+        ca = extract_solana_ca(message_text)
         pinned_message = await client.get_messages(GROUP_ID, ids=event.id)
         if pinned_message:
             message_text = pinned_message.message
