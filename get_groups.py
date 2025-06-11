@@ -1,10 +1,23 @@
-from telethon.sync import TelegramClient
-import config
+from telethon import TelegramClient
+from dotenv import load_dotenv
+import os
 
-client = TelegramClient('session', config.API_ID, config.API_HASH)
-client.start()
+# Load dari file .env
+load_dotenv()
 
-dialogs = client.get_dialogs()
+# Ambil dari environment
+api_id = int(os.getenv('API_ID'))
+api_hash = os.getenv('API_HASH')
 
-for dialog in dialogs:
-    print(f"Name: {dialog.name} - ID: {dialog.id} - Type: {type(dialog.entity)}")
+# Inisialisasi client
+client = TelegramClient('session_name', api_id, api_hash)
+
+async def main():
+    await client.start()
+
+    async for dialog in client.iter_dialogs():
+        if dialog.is_group:
+            print(f"Group Name: {dialog.name} | Group ID: {dialog.id}")
+
+with client:
+    client.loop.run_until_complete(main())
