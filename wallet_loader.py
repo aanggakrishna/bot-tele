@@ -2,23 +2,19 @@ import json
 from solders.keypair import Keypair
 from solana.rpc.api import Client
 
-# RPC endpoint Solana
-RPC_ENDPOINT = "https://api.mainnet-beta.solana.com"
-
-def load_wallet(path='wallet.json'):
-    with open(path, 'r') as f:
-        secret_key = json.load(f)
-    keypair = Keypair.from_bytes(bytes(secret_key))
-    return keypair
+def load_keypair():
+    with open("wallet.json", "r") as f:
+        secret = json.load(f)
+        keypair = Keypair.from_bytes(bytes(secret))
+        return keypair
 
 def check_balance(keypair):
-    client = Client(RPC_ENDPOINT)
-    resp = client.get_balance(keypair.pubkey())
-    balance = resp.value / 1e9  # karena 1 SOL = 10^9 lamports
+    client = Client("https://api.mainnet-beta.solana.com")
+    balance_resp = client.get_balance(keypair.pubkey())
+    balance = balance_resp.value / 1e9
     print(f"Public Key: {keypair.pubkey()}")
     print(f"Balance: {balance} SOL")
-    return balance
 
 if __name__ == "__main__":
-    keypair = load_wallet()
+    keypair = load_keypair()
     check_balance(keypair)
