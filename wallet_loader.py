@@ -13,7 +13,7 @@ def load_wallet(path='wallet.json'):
 
 def check_balance(keypair):
     client = Client(RPC_ENDPOINT)
-    balance = client.get_balance(str(keypair.pubkey()))['result']['value'] / 1e9
+    balance = client.get_balance(keypair.pubkey())['result']['value'] / 1e9
     print(f"Public Key: {keypair.pubkey()}")
     print(f"Balance: {balance} SOL")
     return balance
