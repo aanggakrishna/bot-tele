@@ -16,6 +16,10 @@ client = TelegramClient('session', API_ID, API_HASH)
 # Regex sederhana untuk deteksi Solana CA
 SOLANA_REGEX = re.compile(r'\b[1-9A-HJ-NP-Za-km-z]{32,44}\b')
 
+async def print_ready():
+    group = await client.get_entity(GROUP_ID)
+    print(f"Bot berjalan, menunggu pinned message dari grup: {group.title}")
+
 async def send_owner_dm(message):
     await client.send_message(OWNER_ID, message)
 
@@ -45,5 +49,5 @@ async def handler(event):
 
 
 client.start()
-print("Bot berjalan, menunggu pinned message...")
+client.loop.run_until_complete(print_ready())
 client.run_until_disconnected()
