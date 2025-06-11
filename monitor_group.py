@@ -1,4 +1,5 @@
 from telethon import TelegramClient, events
+from telethon.tl.functions.messages import SendMessageRequest
 import asyncio
 import config
 from trade import execute_trade
@@ -12,6 +13,9 @@ def extract_ca(text):
             return line.strip()
     return None
 
+async def send_dm(message):
+    await client(SendMessageRequest(peer=config.OWNER_ID, message=message))
+
 @client.on(events.ChatAction(chats=[config.GROUP_ID]))
 async def handler(event):
     if event.pinned:
@@ -23,11 +27,14 @@ async def handler(event):
             ca = extract_ca(message.text)
             if ca:
                 print("🎯 CA detected:", ca)
-                execute_trade(ca)
+                try:
+                    execute_trade(ca)
+                    await send_dm(f"✅ Trade executed!\nCA: {ca}")
+                except Exception as e:
+                    await send_dm(f"❌ Trade failed!\nError: {str(e)}")
             else:
                 print("❌ CA not found.")
 
-# Heartbeat log (pengecekan supaya kita tahu bot hidup)
 async def heartbeat():
     while True:
         print("⏳ Bot aktif, menunggu pinned message...")

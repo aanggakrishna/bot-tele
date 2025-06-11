@@ -8,6 +8,7 @@ API_HASH = os.getenv("API_HASH")
 
 ADMIN_USERNAME = "adminxx123"
 GROUP_ID = -1001915865922
+OWNER_ID = 6791240280
 
 SOLANA_RPC = "https://api.mainnet-beta.solana.com"
 JUPITER_QUOTE_URL = "https://quote-api.jup.ag/v6/quote"
