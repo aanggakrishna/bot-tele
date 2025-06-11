@@ -1,0 +1,7 @@
+telethon
+python-dotenv
+solana
+aiohttp
+aiocron
+sqlalchemy
+loguru
