@@ -12,3 +12,6 @@ BUY_AMOUNT_SOL = float(os.getenv("BUY_AMOUNT_SOL"))
 SLIPPAGE_BPS = int(os.getenv("SLIPPAGE_BPS"))
 PROFIT_TARGET = float(os.getenv("PROFIT_TARGET"))
 OWNER_ID = int(os.getenv("OWNER_ID"))
+
+
+SESSION_NAME = os.getenv("SESSION_NAME")  # <-- Tambahkan baris ini
