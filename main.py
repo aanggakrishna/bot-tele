@@ -83,7 +83,19 @@ async def pinned_message_handler(event):
        not hasattr(event.action, 'message') or \
        not hasattr(event, 'pinned') or \
        not event.pinned:
-        logger.debug(f"Skipping ChatAction event: Not a relevant pinned message action. Event type: {type(event.action) if hasattr(event, 'action') else 'N/A'}")
+        # Coba dapatkan teks event jika memungkinkan, untuk debugging
+        event_text = 'N/A'
+        if hasattr(event, 'message') and event.message and hasattr(event.message, 'message'):
+            event_text = event.message.message # Untuk event yang memiliki objek message
+        elif hasattr(event, 'action') and hasattr(event.action, 'message') and event.action.message and hasattr(event.action.message, 'message'):
+            event_text = event.action.message.message # Untuk pinned message (yang akan discan kemudian)
+        elif hasattr(event, 'original_update') and hasattr(event.original_update, 'message') and event.original_update.message:
+            # Coba ambil dari original_update jika ada dan punya message
+            event_text = event.original_update.message.message if hasattr(event.original_update.message, 'message') else str(event.original_update.message)
+        elif hasattr(event, 'action') and event.action: # Jika action ada tapi bukan message
+            event_text = str(event.action) # Konversi objek action ke string untuk info lebih lanjut
+
+        logger.debug(f"Skipping ChatAction event: Not a relevant pinned message action. Event type: {type(event.action) if hasattr(event, 'action') else 'N/A'}. Content: {event_text[:100]}") # Batasi 100 karakter
         return # Abaikan event yang tidak memenuhi kriteria
 
     # Pastikan ini adalah event dari grup yang benar
