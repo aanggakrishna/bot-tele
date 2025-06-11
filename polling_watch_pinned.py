@@ -2,6 +2,7 @@ import asyncio
 import os
 import re
 from telethon import TelegramClient
+from telethon.tl.functions.channels import GetFullChannelRequest
 from dotenv import load_dotenv
 
 # Load env
@@ -26,7 +27,8 @@ async def check_pinned():
     global last_pinned_id
 
     group = await client.get_entity(GROUP_ID)
-    pinned_msg_id = group.pinned_msg_id
+    full_chat = await client(GetFullChannelRequest(group))
+    pinned_msg_id = full_chat.full_chat.pinned_msg_id
 
     if pinned_msg_id != last_pinned_id:
         last_pinned_id = pinned_msg_id
