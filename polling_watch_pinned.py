@@ -2,7 +2,7 @@ import asyncio
 import os
 import re
 from telethon import TelegramClient
-from telethon.tl.functions.channels import GetFullChannelRequest
+from telethon.tl.types import Chat, Channel
 from dotenv import load_dotenv
 
 # Load env
@@ -15,7 +15,6 @@ OWNER_ID = int(os.getenv('OWNER_ID'))
 
 client = TelegramClient('session', API_ID, API_HASH)
 
-# Regex sederhana Solana CA
 SOLANA_REGEX = re.compile(r'\b[1-9A-HJ-NP-Za-km-z]{32,44}\b')
 
 last_pinned_id = None
@@ -26,9 +25,14 @@ async def send_owner_dm(message):
 async def check_pinned():
     global last_pinned_id
 
-    group = await client.get_entity(GROUP_ID)
-    full_chat = await client(GetFullChannelRequest(group))
-    pinned_msg_id = full_chat.full_chat.pinned_msg_id
+    entity = await client.get_entity(GROUP_ID)
+
+    if isinstance(entity, Channel):
+        pinned_msg_id = entity.pinned_msg_id
+    elif isinstance(entity, Chat):
+        pinned_msg_id = entity.pinned_msg_id
+    else:
+        pinned_msg_id = None
 
     if pinned_msg_id != last_pinned_id:
         last_pinned_id = pinned_msg_id
@@ -42,7 +46,6 @@ async def check_pinned():
                 ca = match.group(0)
                 print(f"Ditemukan Solana CA: {ca}")
                 await send_owner_dm(f"CA Solana ditemukan: {ca}")
-                # --> nanti logika buy dipanggil di sini
             else:
                 print("Tidak ditemukan Solana CA di pinned ini.")
         else:
@@ -56,7 +59,7 @@ async def main():
 
     while True:
         await check_pinned()
-        await asyncio.sleep(2)  # heartbeat 2 detik
+        await asyncio.sleep(2)
 
 with client:
     client.loop.run_until_complete(main())
