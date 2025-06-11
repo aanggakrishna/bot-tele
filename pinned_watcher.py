@@ -37,4 +37,16 @@ async def main():
             if message:
                 print(f"📌 Pinned message baru: {message.text}")
                 # Misal CA kamu deteksi di sini
-                if len(message.text) ==
+                if len(message.text) == 44:  # kira-kira format pubkey Solana
+                    ca = message.text.strip()
+                    await buy_token(ca)
+                    await monitor_trades()
+            else:
+                print("✅ Heartbeat...")
+        except Exception as e:
+            print(f"Error: {e}")
+        
+        await asyncio.sleep(2)  # polling tiap 2 detik
+
+if __name__ == "__main__":
+    asyncio.run(main())
