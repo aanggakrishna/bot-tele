@@ -1,10 +1,7 @@
 import config
 import time
-import logging
 from telethon import TelegramClient, events
 from trade import buy_token
-
-logging.basicConfig(filename='logs/bot.log', level=logging.INFO, format='%(asctime)s - %(message)s')
 
 client = TelegramClient('session', config.API_ID, config.API_HASH)
 
@@ -17,7 +14,6 @@ async def handler(event):
         if event.message.id != last_pin_id:
             last_pin_id = event.message.id
             message = event.message.message
-            logging.info(f"Pinned Message: {message}")
             print(f"Pinned Message: {message}")
             ca = extract_ca(message)
             if ca:
@@ -31,7 +27,6 @@ def extract_ca(text):
 
 client.start()
 print("🚀 Bot is running...")
-logging.info("Bot is running...")
 
 while True:
     client.run_until_disconnected()

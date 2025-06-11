@@ -1,23 +1,18 @@
 import requests
 import json
-from solders.keypair import Keypair
-from solders.rpc.api import Client
-from solders.rpc.config import SendTransactionConfig
-from solders.rpc.commitment import Commitment
+from solana.rpc.api import Client
+from solana.transaction import Transaction
+from solana.keypair import Keypair
+from wallet_utils import load_wallet
+import base64
 
 RPC_ENDPOINT = "https://api.mainnet-beta.solana.com"
 JUPITER_QUOTE_URL = "https://quote-api.jup.ag/v6/quote"
 JUPITER_SWAP_URL = "https://quote-api.jup.ag/v6/swap"
 
 client = Client(RPC_ENDPOINT)
-
-def load_keypair(path):
-    with open(path, 'r') as f:
-        secret = json.load(f)
-    return Keypair.from_bytes(bytes(secret))
-
-wallet = load_keypair("wallet.json")
-owner = str(wallet.pubkey())
+wallet = load_wallet("wallet.json")
+owner = str(wallet.public_key)
 
 def get_quote(input_mint, output_mint, amount, slippage=1):
     params = {
@@ -44,10 +39,8 @@ def execute_swap(input_mint, output_mint, amount, slippage=1):
     })
     swap_data = swap_resp.json()
 
-    tx = swap_data['swapTransaction']
-    raw_tx = bytes.fromhex(tx)
-    deserialized = client.deserialize_transaction(raw_tx)
-
-    signed = deserialized.sign([wallet])
-    sig = client.send_transaction(signed, opts=SendTransactionConfig(skip_preflight=True, preflight_commitment=Commitment("confirmed")))
-    return sig
+    tx = base64.b64decode(swap_data['swapTransaction'])
+    txn = Transaction.deserialize(tx)
+    txn.sign(wallet)
+    txid = client.send_transaction(txn)
+    return txid["result"]
