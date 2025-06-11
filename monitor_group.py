@@ -1,4 +1,5 @@
 from telethon import TelegramClient, events
+import asyncio
 import config
 from trade import execute_trade
 
@@ -26,5 +27,18 @@ async def handler(event):
             else:
                 print("❌ CA not found.")
 
-client.start()
-client.run_until_disconnected()
+# Heartbeat log (pengecekan supaya kita tahu bot hidup)
+async def heartbeat():
+    while True:
+        print("⏳ Bot aktif, menunggu pinned message...")
+        await asyncio.sleep(10)
+
+async def main():
+    await client.start()
+    print("✅ Bot sudah terkoneksi ke Telegram.")
+    await asyncio.gather(
+        client.run_until_disconnected(),
+        heartbeat()
+    )
+
+asyncio.run(main())
