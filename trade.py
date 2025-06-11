@@ -4,7 +4,7 @@ import base64
 import config
 import datetime
 from solders.keypair import Keypair
-from solders.rpc.core import Client
+from solders.rpc import Client
 from solders.transaction import VersionedTransaction
 
 def load_wallet():
