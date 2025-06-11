@@ -3,20 +3,23 @@ import os
 import json
 import asyncio
 import aiohttp
+import time # Tambahkan ini jika belum ada, untuk time.time() dan asyncio.sleep()
 from datetime import datetime, timedelta
 
-from solana.rpc.api import Client
-from solana.keypair import Keypair
-from solana.publickey import PublicKey
-from solana.transaction import Transaction
+# IMPOR TERBARU UNTUK SOLANA.PY DAN SOLDERS
+from solana.rpc.api import Client # Ini masih dari solana.rpc.api
+from solders.keypair import Keypair # Keypair sekarang dari solders
+from solders.pubkey import Pubkey as PublicKey # Publickey sekarang dari solders, kita alias sebagai PublicKey
 from solders.instruction import Instruction
 from solders.message import Message as SoldersMessage
-from solders.pubkey import Pubkey as SoldersPubkey
 from solders.transaction import Transaction as SoldersTransaction
+
 from spl.token.constants import TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID
 from spl.token.instructions import get_associated_token_address, create_associated_token_account, close_account
 from math import floor
 from loguru import logger
+
+# ... (sisa kode seperti sebelumnya)
 
 # Konfigurasi dari environment variables (akan dimuat di main.py)
 SOLANA_CLIENT: Client = None
