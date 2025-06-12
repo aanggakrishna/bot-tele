@@ -78,4 +78,14 @@ async def main():
         )
         logger.info("✅ Solana service initialized")
     except Exception as e:
-        logger.error(f"❌ Failed to initialize solana
+        logger.error(f"❌ Failed to initialize solana service: {e}")
+        return
+    
+    # Run tests
+    await test_solana_validation()
+    await test_jupiter_connectivity()
+    
+    logger.info("🎉 All tests completed!")
+
+if __name__ == "__main__":
+    asyncio.run(main())
