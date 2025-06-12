@@ -22,25 +22,25 @@ load_dotenv()
 # Global variables
 rpc_client = None
 wallet_keypair = None
-amount_to_buy_sol = None
-slippage_bps = None
-jupiter_api_url = None
+global_amount_to_buy_sol = None
+global_slippage_bps = None
+global_jupiter_api_url = None
 
 def init_solana_config(rpc_url: str = None, private_key_path: str = None, 
-                      amount_to_buy_sol_param: float = None, slippage_bps_param: int = None, 
-                      jupiter_api_url_param: str = None, solana_private_key_base58: str = None):
+                      amount_to_buy_sol: float = None, slippage_bps: int = None, 
+                      jupiter_api_url: str = None, solana_private_key_base58: str = None):
     """
     Initialize Solana configuration
     If parameters are None, will try to load from environment variables
     """
-    global rpc_client, wallet_keypair, amount_to_buy_sol, slippage_bps, jupiter_api_url
+    global rpc_client, wallet_keypair, global_amount_to_buy_sol, global_slippage_bps, global_jupiter_api_url
     
     # Load from environment variables if not provided
     rpc_url = rpc_url or os.getenv('SOLANA_RPC_URL')
     private_key_path = private_key_path or os.getenv('SOLANA_PRIVATE_KEY_PATH')
-    amount_to_buy_sol_param = amount_to_buy_sol_param or float(os.getenv('AMOUNT_TO_BUY_SOL', '0.1'))
-    slippage_bps_param = slippage_bps_param or int(os.getenv('SLIPPAGE_BPS', '50'))
-    jupiter_api_url_param = jupiter_api_url_param or os.getenv('JUPITER_API_URL', 'https://quote-api.jup.ag/v6')
+    amount_to_buy_sol = amount_to_buy_sol or float(os.getenv('AMOUNT_TO_BUY_SOL', '0.1'))
+    slippage_bps = slippage_bps or int(os.getenv('SLIPPAGE_BPS', '50'))
+    jupiter_api_url = jupiter_api_url or os.getenv('JUPITER_API_URL', 'https://quote-api.jup.ag/v6')
     solana_private_key_base58 = solana_private_key_base58 or os.getenv('SOLANA_PRIVATE_KEY_BASE58')
     
     # Validate required parameters
@@ -83,15 +83,15 @@ def init_solana_config(rpc_url: str = None, private_key_path: str = None,
         raise ValueError("No valid private key source provided")
     
     # Set global variables
-    amount_to_buy_sol = amount_to_buy_sol_param
-    slippage_bps = slippage_bps_param
-    jupiter_api_url = jupiter_api_url_param
+    global_amount_to_buy_sol = amount_to_buy_sol
+    global_slippage_bps = slippage_bps
+    global_jupiter_api_url = jupiter_api_url
     
     logger.info(f"Solana service initialized:")
     logger.info(f"  - Wallet: {wallet_keypair.pubkey()}")
-    logger.info(f"  - Amount: {amount_to_buy_sol} SOL")
-    logger.info(f"  - Slippage: {slippage_bps} BPS")
-    logger.info(f"  - Jupiter API: {jupiter_api_url}")
+    logger.info(f"  - Amount: {global_amount_to_buy_sol} SOL")
+    logger.info(f"  - Slippage: {global_slippage_bps} BPS")
+    logger.info(f"  - Jupiter API: {global_jupiter_api_url}")
 
 def init_solana_config_from_env():
     """
@@ -173,12 +173,12 @@ async def get_token_price_sol(token_mint: PublicKey) -> Optional[float]:
     Get token price in SOL using Jupiter API
     """
     try:
-        if not jupiter_api_url:
+        if not global_jupiter_api_url:
             logger.error("Jupiter API URL not configured")
             return None
         
         # Use Jupiter price API
-        url = f"{jupiter_api_url}/price"
+        url = f"{global_jupiter_api_url}/price"
         params = {
             'ids': str(token_mint),
             'vsToken': 'So11111111111111111111111111111111111111112'  # SOL mint address
@@ -210,11 +210,11 @@ async def get_token_info(token_mint: PublicKey) -> Optional[Dict[str, Any]]:
     Get token information from Jupiter API
     """
     try:
-        if not jupiter_api_url:
+        if not global_jupiter_api_url:
             logger.error("Jupiter API URL not configured")
             return None
         
-        url = f"{jupiter_api_url}/tokens/{str(token_mint)}"
+        url = f"{global_jupiter_api_url}/tokens/{str(token_mint)}"
         
         async with aiohttp.ClientSession() as session:
             async with session.get(url) as response:
@@ -234,14 +234,14 @@ async def buy_token_solana(token_address: str, custom_amount: float = None) -> O
     """
     Buy token using Jupiter swap
     """
-    global rpc_client, wallet_keypair, amount_to_buy_sol, slippage_bps, jupiter_api_url
+    global rpc_client, wallet_keypair, global_amount_to_buy_sol, global_slippage_bps, global_jupiter_api_url
     
-    if not all([rpc_client, wallet_keypair, amount_to_buy_sol, slippage_bps, jupiter_api_url]):
+    if not all([rpc_client, wallet_keypair, global_amount_to_buy_sol, global_slippage_bps, global_jupiter_api_url]):
         logger.error("Solana service not properly initialized")
         return None
     
     # Use custom amount if provided, otherwise use global amount
-    buy_amount = custom_amount or amount_to_buy_sol
+    buy_amount = custom_amount or global_amount_to_buy_sol
     
     try:
         logger.info(f"Starting buy process for token: {token_address}")
@@ -273,12 +273,12 @@ async def buy_token_solana(token_address: str, custom_amount: float = None) -> O
         logger.info(f"Amount in lamports: {amount_lamports}")
         
         # Get quote from Jupiter
-        quote_url = f"{jupiter_api_url}/quote"
+        quote_url = f"{global_jupiter_api_url}/quote"
         quote_params = {
             'inputMint': str(sol_mint),
             'outputMint': str(token_pubkey),
             'amount': amount_lamports,
-            'slippageBps': slippage_bps
+            'slippageBps': global_slippage_bps
         }
         
         async with aiohttp.ClientSession() as session:
@@ -301,7 +301,7 @@ async def buy_token_solana(token_address: str, custom_amount: float = None) -> O
                 logger.info(f"Expected token amount: {expected_token_amount}")
             
             # Get swap transaction
-            swap_url = f"{jupiter_api_url}/swap"
+            swap_url = f"{global_jupiter_api_url}/swap"
             swap_data = {
                 'quoteResponse': quote_data,
                 'userPublicKey': str(wallet_keypair.pubkey()),
@@ -375,9 +375,9 @@ async def sell_token_solana(token_address: str, amount_to_sell: float,
     """
     Sell token using Jupiter swap
     """
-    global rpc_client, wallet_keypair, slippage_bps, jupiter_api_url
+    global rpc_client, wallet_keypair, global_slippage_bps, global_jupiter_api_url
     
-    if not all([rpc_client, wallet_keypair, slippage_bps, jupiter_api_url]):
+    if not all([rpc_client, wallet_keypair, global_slippage_bps, global_jupiter_api_url]):
         logger.error("Solana service not properly initialized")
         return None
     
@@ -405,12 +405,12 @@ async def sell_token_solana(token_address: str, amount_to_sell: float,
         logger.info(f"Attempting to sell {amount_to_sell} {token_symbol}")
         
         # Get quote from Jupiter
-        quote_url = f"{jupiter_api_url}/quote"
+        quote_url = f"{global_jupiter_api_url}/quote"
         quote_params = {
             'inputMint': str(token_pubkey),
             'outputMint': str(sol_mint),
             'amount': amount_token_raw,
-            'slippageBps': slippage_bps
+            'slippageBps': global_slippage_bps
         }
         
         async with aiohttp.ClientSession() as session:
@@ -428,7 +428,7 @@ async def sell_token_solana(token_address: str, amount_to_sell: float,
                 logger.info(f"Expected SOL amount: {expected_sol_amount_float:.6f} SOL")
             
             # Get swap transaction
-            swap_url = f"{jupiter_api_url}/swap"
+            swap_url = f"{global_jupiter_api_url}/swap"
             swap_data = {
                 'quoteResponse': quote_data,
                 'userPublicKey': str(wallet_keypair.pubkey()),
@@ -493,14 +493,14 @@ def get_config_info() -> Dict[str, Any]:
     """
     Get current configuration information
     """
-    global wallet_keypair, amount_to_buy_sol, slippage_bps, jupiter_api_url
+    global wallet_keypair, global_amount_to_buy_sol, global_slippage_bps, global_jupiter_api_url
     
     return {
         'wallet_address': str(wallet_keypair.pubkey()) if wallet_keypair else None,
-        'amount_to_buy_sol': amount_to_buy_sol,
-        'slippage_bps': slippage_bps,
-        'jupiter_api_url': jupiter_api_url,
-        'is_initialized': all([rpc_client, wallet_keypair, amount_to_buy_sol, slippage_bps, jupiter_api_url])
+        'amount_to_buy_sol': global_amount_to_buy_sol,
+        'slippage_bps': global_slippage_bps,
+        'jupiter_api_url': global_jupiter_api_url,
+        'is_initialized': all([rpc_client, wallet_keypair, global_amount_to_buy_sol, global_slippage_bps, global_jupiter_api_url])
     }
 
 async def test_connection() -> bool:

@@ -42,14 +42,8 @@ JUPITER_API_URL = os.getenv('JUPITER_API_URL')
 
 # --- Initialize Services ---
 # Initialize Solana Service
-solana_service.init_solana_config(
-    rpc_url=RPC_URL,
-    private_key_path=PRIVATE_KEY_PATH,
-    amount_to_buy_sol=AMOUNT_TO_BUY_SOL, # Kirim AMOUNT_TO_BUY_SOL
-    slippage_bps=SLIPPAGE_BPS,
-    jupiter_api_url=JUPITER_API_URL,
-    solana_private_key_base58=SOLANA_PRIVATE_KEY_BASE58
-)
+solana_service.init_solana_config_from_env()
+
 
 # --- Heartbeat Function ---
 async def heartbeat():
