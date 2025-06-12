@@ -79,47 +79,120 @@ def get_latest_blockhash() -> str | None:
         logger.error(f"Error getting latest blockhash: {e}")
         return None
 
-async def get_token_price_sol(token_mint_address: PublicKey) -> float | None:
-    try:
-        # Get quote from token_mint_address to SOL
-        input_mint = str(token_mint_address)
-        output_mint = "So11111111111111111111111111111111111111112" # SOL
-        
-        # We need to know the token's decimals to form the correct 'amount' for the quote.
-        # Fetching token info to get decimals
-        token_info = SOLANA_CLIENT.get_token_supply(token_mint_address).value
-        token_decimals = token_info.decimals
-        
-        # Request quote for 1 unit of the token (1 * 10^decimals)
-        amount_in = int(1 * (10**token_decimals))
-        if amount_in == 0: # Avoid division by zero if token has 0 decimals and amount is too small
-            logger.warning(f"Amount in for quote is zero for token {token_mint_address}. Cannot get price.")
-            return None
+async def get_token_price_sol(token_mint_address: PublicKey, max_retries: int = 3) -> float | None:
+    for attempt in range(max_retries):
+        try:
+            # Get quote from token_mint_address to SOL
+            input_mint = str(token_mint_address)
+            output_mint = "So11111111111111111111111111111111111111112" # SOL
+            
+            # Validate token info and check if it's a valid SPL token
+            token_info_response = SOLANA_CLIENT.get_token_supply(token_mint_address)
+            if not token_info_response.value:
+                logger.error(f"Invalid token or cannot fetch token info for {token_mint_address}")
+                return None
+                
+            token_info = token_info_response.value
+            token_decimals = token_info.decimals
+            
+            # Basic token validation
+            if token_decimals > 18 or token_decimals < 0:
+                logger.warning(f"Suspicious token decimals ({token_decimals}) for {token_mint_address}")
+                return None
+            
+            # Request quote for 1 unit of the token (1 * 10^decimals)
+            amount_in = int(1 * (10**token_decimals))
+            if amount_in == 0:
+                logger.warning(f"Amount in for quote is zero for token {token_mint_address}. Cannot get price.")
+                return None
 
         async with aiohttp.ClientSession() as session:
-            async with session.get(f"{JUPITER_API_URL}/quote?inputMint={input_mint}&outputMint={output_mint}&amount={amount_in}&slippageBps=0") as response:
-                response.raise_for_status()
-                data = await response.json()
-                sol_amount_out = int(data['outAmount']) / (10**9) # SOL has 9 decimals
-                if sol_amount_out > 0:
-                    logger.info(f"Fetched token {token_mint_address} price: {sol_amount_out:.9f} SOL")
-                    return sol_amount_out
-                else:
-                    logger.warning(f"Jupiter API returned 0 outAmount for {token_mint_address} price.")
+                try:
+                    # Add timeout for API request
+                    async with session.get(
+                        f"{JUPITER_API_URL}/quote?inputMint={input_mint}&outputMint={output_mint}&amount={amount_in}&slippageBps=0",
+                        timeout=aiohttp.ClientTimeout(total=10)
+                    ) as response:
+                        response.raise_for_status()
+                        data = await response.json()
+                        
+                        # Validate response data
+                        if not all(key in data for key in ['outAmount', 'priceImpactPct']):
+                            logger.error(f"Invalid Jupiter API response format for {token_mint_address}")
+                            return None
+                        
+                        sol_amount_out = int(data['outAmount']) / (10**9) # SOL has 9 decimals
+                        price_impact = float(data['priceImpactPct'])
+                        
+                        # Check liquidity (price impact)
+                        if price_impact > 1.0:  # More than 1% price impact
+                            logger.warning(f"High price impact ({price_impact}%) for {token_mint_address}")
+                            return None
+                            
+                        if sol_amount_out > 0:
+                            logger.info(f"Fetched token {token_mint_address} price: {sol_amount_out:.9f} SOL (Impact: {price_impact}%)")
+                            return sol_amount_out
+                        else:
+                            logger.warning(f"Jupiter API returned 0 outAmount for {token_mint_address} price.")
+                            return None
+                            
+                except asyncio.TimeoutError:
+                    logger.error(f"Timeout fetching price for {token_mint_address}")
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(1)  # Wait before retry
+                        continue
                     return None
     except aiohttp.ClientError as e:
         logger.error(f"HTTP error fetching token price from Jupiter: {e}")
+        if attempt < max_retries - 1:
+            await asyncio.sleep(1)  # Wait before retry
+            continue
     except Exception as e:
         logger.error(f"Error getting token price in SOL for {token_mint_address}: {e}")
+        if attempt < max_retries - 1:
+            await asyncio.sleep(1)  # Wait before retry
+            continue
     return None
 
-async def buy_token_solana(token_mint_address_str: str) -> dict | None:
-    token_mint_address = PublicKey(token_mint_address_str)
+# Rate limiting untuk API calls
+_last_api_call = 0
+async def _rate_limit_wait():
+    global _last_api_call
+    now = time.time()
+    if _last_api_call > 0:
+        elapsed = now - _last_api_call
+        if elapsed < 0.2:  # Maximum 5 requests per second
+            await asyncio.sleep(0.2 - elapsed)
+    _last_api_call = time.time()
+
+async def buy_token_solana(token_mint_address_str: str, max_retries: int = 3) -> dict | None:
+    try:
+        token_mint_address = PublicKey(token_mint_address_str)
+    except ValueError:
+        logger.error(f"Invalid token address format: {token_mint_address_str}")
+        return None
+
     logger.info(f"Attempting to buy token: {token_mint_address_str}")
 
-    # 1. Gunakan AMOUNT_TO_BUY_SOL langsung
+    # Validasi saldo wallet
+    try:
+        balance = SOLANA_CLIENT.get_balance(WALLET_PUBKEY).value
+        min_required_balance = (AMOUNT_TO_BUY_SOL + 0.01) * 10**9  # Tambah 0.01 SOL untuk fee
+        if balance < min_required_balance:
+            logger.error(f"Insufficient balance. Required: {min_required_balance/10**9} SOL, Got: {balance/10**9} SOL")
+            return None
+    except Exception as e:
+        logger.error(f"Failed to check wallet balance: {e}")
+        return None
+
+    # Validasi token sebelum membeli
+    token_price = await get_token_price_sol(token_mint_address)
+    if token_price is None:
+        logger.error("Failed to validate token price and liquidity")
+        return None
+
     sol_amount_to_buy = AMOUNT_TO_BUY_SOL
-    sol_amount_lamports = int(sol_amount_to_buy * 10**9) # SOL has 9 decimal places
+    sol_amount_lamports = int(sol_amount_to_buy * 10**9)
 
     if sol_amount_lamports <= 0:
         logger.error("Calculated SOL amount is zero or negative. Aborting purchase.")
@@ -127,77 +200,143 @@ async def buy_token_solana(token_mint_address_str: str) -> dict | None:
 
     logger.info(f"Buying with {sol_amount_to_buy:.6f} SOL ({sol_amount_lamports} lamports).")
 
-    # 2. Get Jupiter Swap Quote (SOL to Token)
-    async with aiohttp.ClientSession() as session:
-        quote_url = f"{JUPITER_API_URL}/quote?inputMint=So11111111111111111111111111111111111111112&outputMint={token_mint_address_str}&amount={sol_amount_lamports}&slippageBps={SLIPPAGE_BPS}"
-        logger.info(f"Getting Jupiter quote: {quote_url}")
-        async with session.get(quote_url) as response:
-            response.raise_for_status()
-            quote_data = await response.json()
-            if 'outAmount' not in quote_data:
-                logger.error(f"Jupiter quote failed: {quote_data}")
-                return None
-            logger.info(f"Jupiter quote: {quote_data}")
+    for attempt in range(max_retries):
+        try:
+            await _rate_limit_wait()  # Implement rate limiting
+            
+            # Get Jupiter Swap Quote
+            async with aiohttp.ClientSession() as session:
+                quote_url = f"{JUPITER_API_URL}/quote?inputMint=So11111111111111111111111111111111111111112&outputMint={token_mint_address_str}&amount={sol_amount_lamports}&slippageBps={SLIPPAGE_BPS}"
+                logger.info(f"Getting Jupiter quote: {quote_url}")
+                
+                async with session.get(quote_url, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                    response.raise_for_status()
+                    quote_data = await response.json()
+                    
+                    if not all(key in quote_data for key in ['outAmount', 'priceImpactPct']):
+                        logger.error(f"Invalid Jupiter quote response format")
+                        continue
 
-        # 3. Get Jupiter Swap Instructions
-        swap_url = f"{JUPITER_API_URL}/swap"
-        swap_payload = {
-            "quoteResponse": quote_data,
-            "userPublicKey": str(WALLET_PUBKEY),
-            "wrapUnwrapSol": True, # Automatically wrap SOL to wSOL if needed
-            "autoSlippage": False, # Use the defined slippage
-            "computeUnitPriceMicroLamports": "auto" # Or specific value for priority fees
-        }
-        logger.info(f"Getting Jupiter swap instructions. Payload: {swap_payload}")
-        async with session.post(swap_url, json=swap_payload) as response:
-            response.raise_for_status()
-            swap_data = await response.json()
-            logger.info(f"Jupiter swap data: {swap_data}")
+                    # Validate price impact
+                    price_impact = float(quote_data['priceImpactPct'])
+                    if price_impact > 1.0:
+                        logger.error(f"Price impact too high: {price_impact}%")
+                        return None
 
-            if 'swapTransaction' not in swap_data:
-                logger.error(f"Jupiter swap instructions failed: {swap_data}")
-                return None
+                    logger.info(f"Jupiter quote received with price impact: {price_impact}%")
 
-            serialized_tx = swap_data['swapTransaction']
+                await _rate_limit_wait()  # Rate limit between requests
+                
+                # Get Jupiter Swap Instructions
+                swap_url = f"{JUPITER_API_URL}/swap"
+                swap_payload = {
+                    "quoteResponse": quote_data,
+                    "userPublicKey": str(WALLET_PUBKEY),
+                    "wrapUnwrapSol": True,
+                    "autoSlippage": False,
+                    "computeUnitPriceMicroLamports": "auto"
+                }
+                
+                async with session.post(swap_url, json=swap_payload, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                    response.raise_for_status()
+                    swap_data = await response.json()
 
-    # 4. Deserialize and sign the transaction
-    try:
-        transaction = SoldersTransaction.from_bytes(bytes(serialized_tx))
-        transaction.sign([WALLET]) # Sign with your wallet
+                    if 'swapTransaction' not in swap_data:
+                        logger.error(f"Jupiter swap instructions failed: {swap_data}")
+                        continue
 
-        # 5. Send the transaction
-        logger.info("Sending buy transaction...")
-        resp = SOLANA_CLIENT.send_transaction(transaction)
-        tx_signature = resp.value
-        logger.info(f"Buy transaction sent: {tx_signature}")
+                    serialized_tx = swap_data['swapTransaction']
 
-        # 6. Wait for confirmation
-        start_time = time.time()
-        timeout = 60 # seconds
-        while time.time() - start_time < timeout:
-            confirmation = SOLANA_CLIENT.confirm_transaction(tx_signature, commitment="confirmed")
-            if confirmation.value.err:
-                logger.error(f"Buy transaction {tx_signature} failed: {confirmation.value.err}")
-                return None
-            if confirmation.value.context.slot > 0: # Confirmed
-                logger.info(f"Buy transaction {tx_signature} confirmed!")
-                break
-            await asyncio.sleep(2) # Poll every 2 seconds
-        else:
-            logger.warning(f"Buy transaction {tx_signature} not confirmed within {timeout} seconds.")
-            return None
+                    # Deserialize dan sign transaksi
+                    try:
+                        transaction = SoldersTransaction.from_bytes(bytes(serialized_tx))
+                        transaction.sign([WALLET])
 
-        # 7. Get transaction details to extract amount bought
-        amount_bought_token = int(quote_data['outAmount']) / (10**quote_data['outputMintDecimals']) # Convert from raw amount to actual units
-        
-        # Calculate actual token price in SOL (inAmount SOL / outAmount token)
-        token_price_sol_at_buy = sol_amount_to_buy / amount_bought_token if amount_bought_token > 0 else 0
+                        # Kirim transaksi dengan retry logic
+                        logger.info("Sending buy transaction...")
+                        resp = SOLANA_CLIENT.send_transaction(transaction)
+                        tx_signature = resp.value
+                        logger.info(f"Buy transaction sent: {tx_signature}")
 
-        # Determine your ATA for the token
-        wallet_token_account = str(get_associated_token_address(WALLET_PUBKEY, token_mint_address))
+                        # Tunggu konfirmasi dengan timeout yang lebih baik
+                        start_time = time.time()
+                        timeout = 60  # seconds
+                        confirmation_count = 0
+                        max_confirmation_attempts = 30
+
+                        while time.time() - start_time < timeout and confirmation_count < max_confirmation_attempts:
+                            try:
+                                confirmation = SOLANA_CLIENT.confirm_transaction(tx_signature, commitment="confirmed")
+                                
+                                if confirmation.value.err:
+                                    error_msg = confirmation.value.err
+                                    logger.error(f"Buy transaction {tx_signature} failed: {error_msg}")
+                                    return None
+                                    
+                                if confirmation.value.context.slot > 0:
+                                    logger.info(f"Buy transaction {tx_signature} confirmed!")
+                                    
+                                    # Validasi transaksi setelah konfirmasi
+                                    amount_bought_token = int(quote_data['outAmount']) / (10**quote_data['outputMintDecimals'])
+                                    if amount_bought_token <= 0:
+                                        logger.error("Transaction confirmed but received 0 tokens")
+                                        return None
+
+                                    # Hitung harga aktual dalam SOL
+                                    token_price_sol_at_buy = sol_amount_to_buy / amount_bought_token
+                                    
+                                    # Dapatkan alamat ATA
+                                    wallet_token_account = str(get_associated_token_address(WALLET_PUBKEY, token_mint_address))
+                                    
+                                    # Validasi balance setelah pembelian
+                                    try:
+                                        token_balance = SOLANA_CLIENT.get_token_account_balance(wallet_token_account).value.amount
+                                        if int(token_balance) < int(quote_data['outAmount']):
+                                            logger.error(f"Received fewer tokens than expected. Expected: {quote_data['outAmount']}, Got: {token_balance}")
+                                            return None
+                                    except Exception as e:
+                                        logger.error(f"Failed to validate final token balance: {e}")
+                                        return None
+
+                                    break
+                                    
+                            except Exception as e:
+                                logger.warning(f"Error checking transaction confirmation: {e}")
+                                
+                            confirmation_count += 1
+                            await asyncio.sleep(2)
+                            
+                        else:
+                            logger.error(f"Buy transaction {tx_signature} confirmation timeout or max attempts reached")
+                            return None
 
         return {
-            "token_mint_address": token_mint_address_str,
+                            "token_mint_address": token_mint_address_str,
+                            "buy_price_sol": token_price_sol_at_buy,
+                            "amount_bought_token": amount_bought_token,
+                            "wallet_token_account": wallet_token_account,
+                            "buy_tx_signature": tx_signature
+                        }
+                    except Exception as e:
+                        logger.error(f"Error processing transaction: {e}")
+                        if attempt < max_retries - 1:
+                            await asyncio.sleep(2)
+                            continue
+                        return None
+
+        except aiohttp.ClientError as e:
+            logger.error(f"HTTP error during buy process: {e}")
+            if attempt < max_retries - 1:
+                await asyncio.sleep(2)
+                continue
+        except Exception as e:
+            logger.error(f"Unexpected error during buy process: {e}")
+            if attempt < max_retries - 1:
+                await asyncio.sleep(2)
+                continue
+
+    logger.error("All buy attempts failed")
+    return None
             "buy_price_sol": token_price_sol_at_buy, # Hanya harga dalam SOL
             "amount_bought_token": amount_bought_token,
             "wallet_token_account": wallet_token_account,
