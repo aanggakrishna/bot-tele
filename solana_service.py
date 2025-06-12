@@ -27,23 +27,20 @@ slippage_bps = None
 jupiter_api_url = None
 
 def init_solana_config(rpc_url: str = None, private_key_path: str = None, 
-                      amount_to_buy_sol: float = None, slippage_bps: int = None, 
-                      jupiter_api_url: str = None, solana_private_key_base58: str = None):
+                      amount_to_buy_sol_param: float = None, slippage_bps_param: int = None, 
+                      jupiter_api_url_param: str = None, solana_private_key_base58: str = None):
     """
     Initialize Solana configuration
     If parameters are None, will try to load from environment variables
     """
-    global rpc_client, wallet_keypair
-    global amount_to_buy_sol as global_amount
-    global slippage_bps as global_slippage
-    global jupiter_api_url as global_jupiter_api
+    global rpc_client, wallet_keypair, amount_to_buy_sol, slippage_bps, jupiter_api_url
     
     # Load from environment variables if not provided
     rpc_url = rpc_url or os.getenv('SOLANA_RPC_URL')
     private_key_path = private_key_path or os.getenv('SOLANA_PRIVATE_KEY_PATH')
-    amount_to_buy_sol = amount_to_buy_sol or float(os.getenv('AMOUNT_TO_BUY_SOL', '0.1'))
-    slippage_bps = slippage_bps or int(os.getenv('SLIPPAGE_BPS', '50'))
-    jupiter_api_url = jupiter_api_url or os.getenv('JUPITER_API_URL', 'https://quote-api.jup.ag/v6')
+    amount_to_buy_sol_param = amount_to_buy_sol_param or float(os.getenv('AMOUNT_TO_BUY_SOL', '0.1'))
+    slippage_bps_param = slippage_bps_param or int(os.getenv('SLIPPAGE_BPS', '50'))
+    jupiter_api_url_param = jupiter_api_url_param or os.getenv('JUPITER_API_URL', 'https://quote-api.jup.ag/v6')
     solana_private_key_base58 = solana_private_key_base58 or os.getenv('SOLANA_PRIVATE_KEY_BASE58')
     
     # Validate required parameters
@@ -86,15 +83,15 @@ def init_solana_config(rpc_url: str = None, private_key_path: str = None,
         raise ValueError("No valid private key source provided")
     
     # Set global variables
-    global_amount = amount_to_buy_sol
-    global_slippage = slippage_bps
-    global_jupiter_api = jupiter_api_url
+    amount_to_buy_sol = amount_to_buy_sol_param
+    slippage_bps = slippage_bps_param
+    jupiter_api_url = jupiter_api_url_param
     
     logger.info(f"Solana service initialized:")
     logger.info(f"  - Wallet: {wallet_keypair.pubkey()}")
-    logger.info(f"  - Amount: {global_amount} SOL")
-    logger.info(f"  - Slippage: {global_slippage} BPS")
-    logger.info(f"  - Jupiter API: {global_jupiter_api}")
+    logger.info(f"  - Amount: {amount_to_buy_sol} SOL")
+    logger.info(f"  - Slippage: {slippage_bps} BPS")
+    logger.info(f"  - Jupiter API: {jupiter_api_url}")
 
 def init_solana_config_from_env():
     """
