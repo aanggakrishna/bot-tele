@@ -167,10 +167,16 @@ async def pinned_message_handler(event):
 
     # Get message text from the actual pinned message object
     message_text = None
-    if hasattr(actual_pinned_message_object, 'message') and actual_pinned_message_object.message:
-        message_text = actual_pinned_message_object.message
-    elif hasattr(actual_pinned_message_object, 'text') and actual_pinned_message_object.text: # Fallback for other message structures
-        message_text = actual_pinned_message_object.text
+    # Check if it's a MessageService object
+    if hasattr(actual_pinned_message_object, '__class__') and actual_pinned_message_object.__class__.__name__ == 'MessageService':
+        if hasattr(actual_pinned_message_object, 'action') and hasattr(actual_pinned_message_object.action, 'message'):
+            message_text = actual_pinned_message_object.action.message
+    else:
+        # Try regular message attributes
+        if hasattr(actual_pinned_message_object, 'message') and actual_pinned_message_object.message:
+            message_text = actual_pinned_message_object.message
+        elif hasattr(actual_pinned_message_object, 'text') and actual_pinned_message_object.text:
+            message_text = actual_pinned_message_object.text
     
     if not message_text:
         # This means event.pinned_message existed, but we couldn't get text from it.
