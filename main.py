@@ -79,16 +79,85 @@ async def send_dm_to_owner(message):
     except Exception as e:
         logger.error(f"Error sending DM to owner: {e}")
 
+# Ganti fungsi extract_solana_ca dengan yang ini:
+
 def extract_solana_ca(message_text):
+    # Pattern untuk Solana address (32-44 karakter, base58)
     solana_address_pattern = r'\b[1-9A-HJ-NP-Za-km-z]{32,44}\b'
-    match = re.search(solana_address_pattern, message_text)
-    if match:
+    matches = re.findall(solana_address_pattern, message_text)
+    
+    if not matches:
+        return None
+    
+    for match in matches:
         try:
-            PublicKey(match.group(0))
-            return match.group(0)
-        except ValueError:
-            logger.warning(f"Extracted string '{match.group(0)}' is not a valid Solana Public Key.")
-            return None
+            # Coba validasi dengan solders PublicKey
+            from solders.pubkey import Pubkey
+            validated_pubkey = Pubkey.from_string(match)
+            logger.info(f"Valid Solana address found: {match}")
+            return match
+        except Exception as e:
+            logger.debug(f"String '{match}' is not a valid Solana PublicKey (solders): {e}")
+            
+            # Fallback: coba dengan solana-py jika tersedia
+            try:
+                from solana.publickey import PublicKey as SolanaPublicKey
+                SolanaPublicKey(match)
+                logger.info(f"Valid Solana address found (fallback): {match}")
+                return match
+            except Exception as e2:
+                logger.debug(f"String '{match}' is not a valid Solana PublicKey (solana-py): {e2}")
+                
+                # Fallback terakhir: validasi manual base58
+                try:
+                    import base58
+                    decoded = base58.b58decode(match)
+                    if len(decoded) == 32:  # Solana address harus 32 bytes
+                        logger.info(f"Valid Solana address found (base58 validation): {match}")
+                        return match
+                    else:
+                        logger.debug(f"String '{match}' decoded length is {len(decoded)}, expected 32")
+                except Exception as e3:
+                    logger.debug(f"String '{match}' failed base58 validation: {e3}")
+                    continue
+    
+    logger.info("No valid Solana CA found in the message.")
+    return None
+
+# Atau jika Anda ingin validasi yang lebih sederhana tanpa library validation:
+def extract_solana_ca_simple(message_text):
+    """
+    Ekstrak Solana CA dengan validasi sederhana
+    """
+    # Pattern untuk Solana address
+    solana_address_pattern = r'\b[1-9A-HJ-NP-Za-km-z]{32,44}\b'
+    matches = re.findall(solana_address_pattern, message_text)
+    
+    if not matches:
+        return None
+    
+    # Filter matches yang tidak mengandung kata-kata umum
+    excluded_words = ['pump', 'moon', 'token', 'coin', 'test']
+    
+    for match in matches:
+        # Skip jika mengandung kata yang dikecualikan
+        if any(word.lower() in match.lower() for word in excluded_words):
+            logger.debug(f"Skipping '{match}' - contains excluded word")
+            continue
+            
+        # Validasi panjang (Solana address biasanya 32-44 karakter)
+        if 32 <= len(match) <= 44:
+            # Validasi karakter (hanya base58)
+            valid_chars = set('123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz')
+            if all(c in valid_chars for c in match):
+                logger.info(f"Potential Solana address found: {match}")
+                return match
+            else:
+                logger.debug(f"String '{match}' contains invalid base58 characters")
+        else:
+            logger.debug(f"String '{match}' has invalid length: {len(match)}")
+    
+    logger.info("No valid Solana CA found in the message.")
     return None
 
 # --- Telegram Event Handler ---
