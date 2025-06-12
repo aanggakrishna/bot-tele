@@ -125,8 +125,9 @@ def validate_token_address(token_address: str) -> Optional[PublicKey]:
     
     try:
         # Try to create PublicKey
-        pubkey = PublicKey.from_string(token_address)
-        logger.info(f"✅ Valid token address: {token_address}")
+        clean_address = token_address[:44]
+        pubkey = PublicKey.from_string(clean_address)
+        logger.info(f"✅ Valid token address: {clean_address}")
         return pubkey
     except Exception as e:
         logger.error(f"Failed to create PublicKey from address '{token_address}': {e}")
