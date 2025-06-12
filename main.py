@@ -120,7 +120,8 @@ async def pinned_message_handler(event):
 
         event_text = str(event_text_raw) if event_text_raw is not None else 'N/A'
 
-        logger.debug(f"Skipping ChatAction event: Not a relevant pinned message action. Event type: {type(event.action) if hasattr(event, 'action') else 'N/A'}. Content: {event_text[:100]}")
+        group_name = event.original_update.message.chat.title if hasattr(event, 'original_update') and hasattr(event.original_update, 'message') and hasattr(event.original_update.message, 'chat') else 'Unknown Group'
+        logger.debug(f"Skipping ChatAction event: Not a relevant pinned message action. Event type: {type(event.action) if hasattr(event, 'action') else 'N/A'}. Group: {group_name} (ID: {event.peer_id.channel_id}). Content: {event_text[:100]}")
         return # Abaikan event yang tidak memenuhi kriteria
     # Pastikan ini adalah event dari grup yang benar
     if event.peer_id.channel_id != abs(GROUP_ID):
@@ -131,8 +132,9 @@ async def pinned_message_handler(event):
     pinned_message = event.action.message
     message_text = pinned_message.message # Konten teks dari pesan
 
-    logger.info(f"New Pinned Message detected in group {GROUP_ID}: {message_text[:200]}...")
-    await send_dm_to_owner(f"New Pinned Message detected: {message_text[:200]}...")
+    group_name = event.original_update.message.chat.title if hasattr(event, 'original_update') and hasattr(event.original_update, 'message') and hasattr(event.original_update.message, 'chat') else 'Unknown Group'
+    logger.info(f"New Pinned Message detected in group {group_name} (ID: {GROUP_ID}): {message_text[:200]}...")
+    await send_dm_to_owner(f"New Pinned Message detected in {group_name}: {message_text[:200]}...")
 
     ca = extract_solana_ca(message_text)
     if ca:
