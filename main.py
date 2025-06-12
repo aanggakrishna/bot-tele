@@ -117,9 +117,13 @@ async def pinned_message_handler(event):
 
     if hasattr(event, 'new_pin') and event.new_pin:
         log_event_description = "Pin Action"
-        if hasattr(event, 'action_message') and event.action_message and hasattr(event.action_message, 'message'):
-            log_content_preview = str(event.action_message.message)[:100]
-        
+        # Untuk pratinjau log, coba dapatkan teks dari pesan yang sebenarnya di-pin
+        if hasattr(event, 'pinned_message') and event.pinned_message and hasattr(event.pinned_message, 'message') and event.pinned_message.message:
+            log_content_preview = str(event.pinned_message.message)[:100]
+        elif hasattr(event, 'action_message') and event.action_message: # Fallback ke string pesan layanan untuk log
+            log_content_preview = str(event.action_message)[:100]
+        else:
+            log_content_preview = "N/A (Pin action, specific content not available for preview)"
         # Check if it's the target group
         # GROUP_ID is positive bare ID, event.chat_id is -100<ID> for channels
         if hasattr(event, 'chat_id') and event.chat_id == -abs(GROUP_ID):
@@ -147,16 +151,17 @@ async def pinned_message_handler(event):
         return
 
     # If we reach here, it's a pinned message from the target group
-    pinned_message_obj = event.action_message # This is the telethon.tl.types.Message object
-    if not pinned_message_obj or not hasattr(pinned_message_obj, 'message') or not pinned_message_obj.message:
-        logger.warning(f"Pin event in target group {log_group_name} (ID: {event.chat_id}) detected, but pinned message content (text) is missing or empty. Pinned Message Object: {pinned_message_obj}")
+    # Untuk event pin, event.pinned_message berisi pesan aktual yang di-pin.
+    actual_pinned_message = event.pinned_message
+
+    if not actual_pinned_message or not hasattr(actual_pinned_message, 'message') or not actual_pinned_message.message:
+        logger.warning(f"Pin event in target group {log_group_name} (ID: {event.chat_id}) detected, but the pinned message content (text) is missing or empty. Pinned Message (event.pinned_message): {actual_pinned_message}")
         await send_dm_to_owner(f"Pin event in group {log_group_name}, but pinned message content was empty.")
         return
 
-    message_text = pinned_message_obj.message # Konten teks dari pesan
+    message_text = actual_pinned_message.message # Konten teks dari pesan yang di-pin
 
-    # Group name for successful detection log
-    # log_group_name should already be populated from above
+    # log_group_name seharusnya sudah terisi dari atas
     logger.info(f"New Pinned Message detected in group {log_group_name} (ID: {event.chat_id}): {message_text[:200]}...")
     await send_dm_to_owner(f"New Pinned Message detected in {log_group_name}: {message_text[:200]}...")
 
