@@ -81,47 +81,77 @@ async def send_dm_to_owner(message):
 
 # Ganti fungsi extract_solana_ca dengan yang ini:
 
+# Ganti fungsi extract_solana_ca dengan yang ini di main.py:
+
 def extract_solana_ca(message_text):
+    """
+    Ekstrak Solana CA dengan validasi yang lebih robust
+    """
     # Pattern untuk Solana address (32-44 karakter, base58)
     solana_address_pattern = r'\b[1-9A-HJ-NP-Za-km-z]{32,44}\b'
     matches = re.findall(solana_address_pattern, message_text)
     
     if not matches:
+        logger.info("No potential Solana addresses found in message")
         return None
     
+    logger.info(f"Found {len(matches)} potential addresses: {matches}")
+    
+    # Filter matches yang tidak mengandung kata-kata umum
+    excluded_words = ['pump', 'moon', 'token', 'coin', 'test', 'www', 'http', 'https']
+    
     for match in matches:
+        logger.debug(f"Checking potential address: {match}")
+        
+        # Skip jika mengandung kata yang dikecualikan (case insensitive)
+        if any(word.lower() in match.lower() for word in excluded_words):
+            logger.debug(f"Skipping '{match}' - contains excluded word")
+            continue
+            
+        # Validasi panjang (Solana address standar adalah 32-44 karakter)
+        if not (32 <= len(match) <= 44):
+            logger.debug(f"Skipping '{match}' - invalid length: {len(match)}")
+            continue
+        
+        # Validasi karakter base58
+        valid_chars = set('123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz')
+        if not all(c in valid_chars for c in match):
+            logger.debug(f"Skipping '{match}' - contains invalid base58 characters")
+            continue
+        
+        # Validasi dengan library jika tersedia
         try:
-            # Coba validasi dengan solders PublicKey
+            # Coba dengan solders
             from solders.pubkey import Pubkey
             validated_pubkey = Pubkey.from_string(match)
-            logger.info(f"Valid Solana address found: {match}")
+            logger.info(f"✅ Valid Solana address confirmed with solders: {match}")
             return match
         except Exception as e:
-            logger.debug(f"String '{match}' is not a valid Solana PublicKey (solders): {e}")
+            logger.debug(f"solders validation failed for '{match}': {e}")
             
-            # Fallback: coba dengan solana-py jika tersedia
+            # Fallback ke solana-py
             try:
                 from solana.publickey import PublicKey as SolanaPublicKey
                 SolanaPublicKey(match)
-                logger.info(f"Valid Solana address found (fallback): {match}")
+                logger.info(f"✅ Valid Solana address confirmed with solana-py: {match}")
                 return match
             except Exception as e2:
-                logger.debug(f"String '{match}' is not a valid Solana PublicKey (solana-py): {e2}")
+                logger.debug(f"solana-py validation failed for '{match}': {e2}")
                 
-                # Fallback terakhir: validasi manual base58
+                # Fallback ke base58 manual
                 try:
                     import base58
                     decoded = base58.b58decode(match)
                     if len(decoded) == 32:  # Solana address harus 32 bytes
-                        logger.info(f"Valid Solana address found (base58 validation): {match}")
+                        logger.info(f"✅ Valid Solana address confirmed with base58: {match}")
                         return match
                     else:
-                        logger.debug(f"String '{match}' decoded length is {len(decoded)}, expected 32")
+                        logger.debug(f"base58 decode length mismatch for '{match}': {len(decoded)} bytes (expected 32)")
                 except Exception as e3:
-                    logger.debug(f"String '{match}' failed base58 validation: {e3}")
+                    logger.debug(f"base58 validation failed for '{match}': {e3}")
                     continue
     
-    logger.info("No valid Solana CA found in the message.")
+    logger.info("No valid Solana CA found after validation")
     return None
 
 # Atau jika Anda ingin validasi yang lebih sederhana tanpa library validation:
@@ -159,6 +189,87 @@ def extract_solana_ca_simple(message_text):
     
     logger.info("No valid Solana CA found in the message.")
     return None
+async def debug_solana_service():
+    """Debug function to test solana service"""
+    try:
+        # Test dengan alamat yang valid
+        test_address = "HLcVBPMpALNGMvixanRNxiL1NQ4rdXJaaExwaBCkpump"
+        
+        logger.info(f"Testing solana service with address: {test_address}")
+        
+        # Test validasi address
+        from solana_service import validate_token_address
+        validated = validate_token_address(test_address)
+        
+        if validated:
+            logger.info(f"✅ Address validation successful: {validated}")
+        else:
+            logger.error("❌ Address validation failed")
+            
+        # Test price fetch
+        if validated:
+            price = await solana_service.get_token_price_sol(validated)
+            if price:
+                logger.info(f"✅ Price fetch successful: {price} SOL")
+            else:
+                logger.warning("⚠️ Could not fetch price (may be normal for new tokens)")
+        
+    except Exception as e:
+        logger.error(f"Debug test failed: {e}", exc_info=True)
+
+# Ubah bagian dalam pinned_message_handler setelah mendapatkan CA:
+
+            # --- Initiate Solana Buy Logic ---
+            logger.info(f"Attempting to buy token: {ca}")
+            
+            # Debug: Test solana service first
+            await debug_solana_service()
+            
+            buy_result = await solana_service.buy_token_solana(ca)
+
+            if buy_result:
+                logger.info(f"✅ Buy successful: {buy_result}")
+                add_trade(
+                    db,
+                    token_mint_address=buy_result['token_mint_address'],
+                    buy_price_sol=buy_result['buy_price_sol'],
+                    amount_bought_token=buy_result['amount_bought_token'],
+                    wallet_token_account=buy_result['wallet_token_account'],
+                    buy_tx_signature=buy_result['buy_tx_signature']
+                )
+                await send_dm_to_owner(
+                    f"✅ **Beli Berhasil!**\n"
+                    f"Token: `{buy_result['token_mint_address']}`\n"
+                    f"Jumlah Dibeli: `{buy_result['amount_bought_token']:.6f}`\n"
+                    f"Harga Beli (SOL): `{buy_result['buy_price_sol']:.8f}`\n"
+                    f"Tx Sig: `{buy_result['buy_tx_signature'][:10]}...` [explorer](https://solscan.io/tx/{buy_result['buy_tx_signature']}{'?cluster=devnet' if RPC_URL == 'https://api.devnet.solana.com' else ''})\n"
+                    f"Total Pembelian Aktif: {get_total_active_trades_count(db)}/{MAX_PURCHASES_ALLOWED}"
+                )
+                logger.info(f"Successfully bought {ca}. Added to DB. Current active trades: {get_total_active_trades_count(db)}")
+            else:
+                await send_dm_to_owner(f"❌ **Pembelian Gagal** untuk token: `{ca}`. Cek log bot untuk detail lebih lanjut.")
+                logger.error(f"Failed to buy token: {ca}")
+
+# Tambahkan juga fungsi untuk test Jupiter API:
+
+async def test_jupiter_api():
+    """Test Jupiter API connectivity"""
+    try:
+        import aiohttp
+        url = f"{JUPITER_API_URL}/tokens"
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as response:
+                if response.status == 200:
+                    logger.info("✅ Jupiter API is accessible")
+                    return True
+                else:
+                    logger.error(f"❌ Jupiter API error: {response.status}")
+                    return False
+    except Exception as e:
+        logger.error(f"❌ Jupiter API test failed: {e}")
+        return False
+
 
 # --- Telegram Event Handler ---
 # Ganti fungsi pinned_message_handler dengan yang ini:
@@ -452,6 +563,12 @@ async def monitor_trades_and_sell():
 async def main():
     logger.info("Initializing database...")
     init_db()
+
+    # Test Jupiter API
+    logger.info("Testing Jupiter API connectivity...")
+    jupiter_ok = await test_jupiter_api()
+    if not jupiter_ok:
+        logger.warning("Jupiter API test failed - trading may not work properly")
 
     logger.info("Starting Telegram client...")
     await client.start()
