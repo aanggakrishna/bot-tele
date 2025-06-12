@@ -103,7 +103,8 @@ async def pinned_message_handler(event):
         # Pastikan event_text_raw adalah string, jika None maka default ke 'N/A'
         event_text = str(event_text_raw) if event_text_raw is not None else 'N/A'
 
-logger.debug(f"Skipping ChatAction event: Not a relevant pinned message action. Event type: {type(event.action) if hasattr(event, 'action') else 'N/A'}. Content: {event_text[:100]}") # Batasi 100 karakter
+        # Log event dengan teks yang sudah diambil
+        logger.debug(f"Skipping ChatAction event: Not a relevant pinned message action. Event type: {type(event.action) if hasattr(event, 'action') else 'N/A'}. Content: {event_text[:100]}") # Batasi 100 karakter
 
     # Pastikan ini adalah event dari grup yang benar
     if event.peer_id.channel_id != abs(GROUP_ID):
