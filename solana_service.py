@@ -310,12 +310,12 @@ async def buy_token_solana(token_mint_address_str: str, max_retries: int = 3) ->
                             logger.error(f"Buy transaction {tx_signature} confirmation timeout or max attempts reached")
                             return None
 
-        return {
+                        return {
                             "token_mint_address": token_mint_address_str,
                             "buy_price_sol": token_price_sol_at_buy,
                             "amount_bought_token": amount_bought_token,
                             "wallet_token_account": wallet_token_account,
-                            "buy_tx_signature": tx_signature
+                            "buy_tx_signature": str(tx_signature)
                         }
                     except Exception as e:
                         logger.error(f"Error processing transaction: {e}")
@@ -329,23 +329,16 @@ async def buy_token_solana(token_mint_address_str: str, max_retries: int = 3) ->
             if attempt < max_retries - 1:
                 await asyncio.sleep(2)
                 continue
+            return None
         except Exception as e:
             logger.error(f"Unexpected error during buy process: {e}")
             if attempt < max_retries - 1:
                 await asyncio.sleep(2)
                 continue
+            return None
 
     logger.error("All buy attempts failed")
     return None
-            "buy_price_sol": token_price_sol_at_buy, # Hanya harga dalam SOL
-            "amount_bought_token": amount_bought_token,
-            "wallet_token_account": wallet_token_account,
-            "buy_tx_signature": str(tx_signature)
-        }
-
-    except Exception as e:
-        logger.error(f"Error during Solana buy transaction: {e}")
-        return None
 
 async def sell_token_solana(token_mint_address_str: str, amount_to_sell: float, wallet_token_account_str: str) -> dict | None:
     token_mint_address = PublicKey(token_mint_address_str)

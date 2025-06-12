@@ -179,8 +179,8 @@ async def dm_heartbeat():
     finally:
         db.close()
 
-# Price Check and Sell Logic (every 30 seconds)
-@aiocron.crontab('*/30 * * * * *') # Every 30 seconds
+# Price Check and Sell Logic (every x seconds)
+@aiocron.crontab('*/5 * * * * *') # Every x seconds
 async def monitor_trades_and_sell():
     db = next(get_db())
     try:
