@@ -151,32 +151,33 @@ async def pinned_message_handler(event):
     # If we reach here, it's a pinned message from the target group
     # `is_target_pin_event` being True implies `event.new_pin` was True.
     # We expect `event.pinned_message` to exist.
+    # For a pin event, the actual content is in event.pinned_message.
 
-    # Get the pinned message content, trying different attributes
-    pinned_message = None
-    if hasattr(event, 'pinned_message'):
-        pinned_message = event.pinned_message
-    elif hasattr(event, 'action_message'):
-        pinned_message = event.action_message
-    
-    if not pinned_message:
-        logger.error(f"CRITICAL ANOMALY: is_target_pin_event is True for group {log_group_name} (ID: {event.chat_id}), "
-                     f"but neither 'pinned_message' nor 'action_message' attributes contain the message. "
+    if not hasattr(event, 'pinned_message') or not event.pinned_message:
+        # This covers cases where 'pinned_message' attribute is missing OR it exists but is None.
+        # This is the anomaly: event.new_pin was true, but no pinned_message data.
+        logger.error(f"CRITICAL ANOMALY: Pin event detected (is_target_pin_event=True, event.new_pin={getattr(event, 'new_pin', 'N/A')}) "
+                     f"for group {log_group_name} (ID: {event.chat_id}), "
+                     f"but 'event.pinned_message' is missing or None. "
                      f"Event object: {event!r}")
-        await send_dm_to_owner(f"🚨 Bot Error: Cannot find pinned message content in {log_group_name}. Check logs.")
+        await send_dm_to_owner(f"🚨 Bot Error: Inconsistent pin event for {log_group_name} (pinned_message data missing/None). Check logs.")
         return
 
-    # Get message text from pinned message
+    actual_pinned_message_object = event.pinned_message # This should be the telethon.tl.types.Message object
+
+    # Get message text from the actual pinned message object
     message_text = None
-    if hasattr(pinned_message, 'message') and pinned_message.message:
-        message_text = pinned_message.message
-    elif hasattr(pinned_message, 'text') and pinned_message.text:
-        message_text = pinned_message.text
+    if hasattr(actual_pinned_message_object, 'message') and actual_pinned_message_object.message:
+        message_text = actual_pinned_message_object.message
+    elif hasattr(actual_pinned_message_object, 'text') and actual_pinned_message_object.text: # Fallback for other message structures
+        message_text = actual_pinned_message_object.text
     
     if not message_text:
-        logger.warning(f"Pin event in target group {log_group_name} (ID: {event.chat_id}) detected, but cannot extract message text. "
-                      f"Pinned Message Object: {pinned_message!r}")
-        await send_dm_to_owner(f"Pin event in {log_group_name}, but could not extract message content.")
+        # This means event.pinned_message existed, but we couldn't get text from it.
+        logger.warning(f"Pin event in target group {log_group_name} (ID: {event.chat_id}) detected. "
+                       f"event.pinned_message was found, but its text content is missing or empty. "
+                       f"Pinned Message Object (event.pinned_message): {actual_pinned_message_object!r}")
+        await send_dm_to_owner(f"Pin event in {log_group_name}, but the pinned message's text content was empty.")
         return
 
     # Group name for successful detection log
