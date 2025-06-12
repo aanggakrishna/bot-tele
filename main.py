@@ -78,16 +78,17 @@ def extract_solana_ca(message_text):
 @client.on(events.ChatAction)
 async def pinned_message_handler(event):
     # Logika pengecekan yang lebih robust
-    # Pastikan event memiliki 'action' dan 'pinned' dan 'message'
+    # Memastikan event memiliki 'action', 'pinned', 'message', DAN 'peer_id'
     if not hasattr(event, 'action') or \
        not hasattr(event.action, 'message') or \
        not hasattr(event, 'pinned') or \
-       not event.pinned:
-        # Coba dapatkan teks event jika memungkinkan, untuk debugging
-        event_text = 'N/A'
-        # Coba dapatkan teks event jika memungkinkan, untuk debugging
-        event_text_raw = None # Inisialisasi sebagai None
+       not event.pinned or \
+       not hasattr(event, 'peer_id') or \
+       not hasattr(event.peer_id, 'channel_id') or \
+       event.peer_id.channel_id != abs(GROUP_ID): # Pindahkan pengecekan grup ke sini
 
+        # ... (kode untuk mendapatkan event_text seperti sebelumnya) ...
+        event_text_raw = None
         if hasattr(event, 'message') and event.message and hasattr(event.message, 'message') and event.message.message is not None:
             event_text_raw = event.message.message
         elif hasattr(event, 'action') and hasattr(event.action, 'message') and event.action.message and hasattr(event.action.message, 'message') and event.action.message.message is not None:
@@ -96,16 +97,14 @@ async def pinned_message_handler(event):
             if hasattr(event.original_update.message, 'message') and event.original_update.message.message is not None:
                 event_text_raw = event.original_update.message.message
             else:
-                event_text_raw = str(event.original_update.message) # Fallback ke str() jika message objek tidak punya 'message'
-        elif hasattr(event, 'action') and event.action: # Jika action ada tapi bukan message
-            event_text_raw = str(event.action) # Konversi objek action ke string untuk info lebih lanjut
+                event_text_raw = str(event.original_update.message)
+        elif hasattr(event, 'action') and event.action:
+            event_text_raw = str(event.action)
 
-        # Pastikan event_text_raw adalah string, jika None maka default ke 'N/A'
         event_text = str(event_text_raw) if event_text_raw is not None else 'N/A'
 
-        # Log event dengan teks yang sudah diambil
-        logger.debug(f"Skipping ChatAction event: Not a relevant pinned message action. Event type: {type(event.action) if hasattr(event, 'action') else 'N/A'}. Content: {event_text[:100]}") # Batasi 100 karakter
-
+        logger.debug(f"Skipping ChatAction event: Not a relevant pinned message action. Event type: {type(event.action) if hasattr(event, 'action') else 'N/A'}. Content: {event_text[:100]}")
+        return # Abaikan event yang tidak memenuhi kriteria
     # Pastikan ini adalah event dari grup yang benar
     if event.peer_id.channel_id != abs(GROUP_ID):
         logger.debug(f"Skipping ChatAction event: Not from target group. Event group ID: {event.peer_id.channel_id}")
