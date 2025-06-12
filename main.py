@@ -91,15 +91,21 @@ def extract_solana_ca(message_text):
     
     logger.info(f"Found {len(matches)} potential addresses: {matches}")
     
-    # Filter matches yang tidak mengandung kata-kata umum
-    excluded_words = ['pump', 'moon', 'token', 'coin', 'test', 'www', 'http', 'https']
+    # Filter matches yang BUKAN alamat Solana yang valid
+    # Lebih spesifik - hanya filter jika SELURUH string adalah kata yang dikecualikan
+    excluded_full_words = ['www', 'http', 'https']  # Hanya kata-kata yang pasti bukan alamat
     
     for match in matches:
         logger.debug(f"Checking potential address: {match}")
         
-        # Skip jika mengandung kata yang dikecualikan (case insensitive)
-        if any(word.lower() in match.lower() for word in excluded_words):
-            logger.debug(f"Skipping '{match}' - contains excluded word")
+        # Skip jika seluruh string adalah kata yang dikecualikan
+        if match.lower() in [word.lower() for word in excluded_full_words]:
+            logger.debug(f"Skipping '{match}' - is excluded word")
+            continue
+        
+        # Skip jika mengandung karakter yang jelas bukan alamat Solana
+        if any(char in match for char in ['.', '/', ':', '@', '#']):
+            logger.debug(f"Skipping '{match}' - contains invalid characters")
             continue
             
         # Validasi panjang (Solana address standar adalah 32-44 karakter)
@@ -148,25 +154,28 @@ def extract_solana_ca(message_text):
     logger.info("No valid Solana CA found after validation")
     return None
 
-# Atau jika Anda ingin validasi yang lebih sederhana tanpa library validation:
+
+# Alternatif yang lebih sederhana - hanya validasi format tanpa filter kata
 def extract_solana_ca_simple(message_text):
     """
-    Ekstrak Solana CA dengan validasi sederhana
+    Ekstrak Solana CA dengan validasi sederhana tanpa filter kata yang berlebihan
     """
     # Pattern untuk Solana address
     solana_address_pattern = r'\b[1-9A-HJ-NP-Za-km-z]{32,44}\b'
     matches = re.findall(solana_address_pattern, message_text)
     
     if not matches:
+        logger.info("No potential Solana addresses found in message")
         return None
     
-    # Filter matches yang tidak mengandung kata-kata umum
-    excluded_words = ['pump', 'moon', 'token', 'coin', 'test']
+    logger.info(f"Found {len(matches)} potential addresses: {matches}")
     
     for match in matches:
-        # Skip jika mengandung kata yang dikecualikan
-        if any(word.lower() in match.lower() for word in excluded_words):
-            logger.debug(f"Skipping '{match}' - contains excluded word")
+        logger.debug(f"Checking potential address: {match}")
+        
+        # Skip jika mengandung karakter yang jelas bukan alamat Solana
+        if any(char in match for char in ['.', '/', ':', '@', '#', ' ']):
+            logger.debug(f"Skipping '{match}' - contains invalid characters")
             continue
             
         # Validasi panjang (Solana address biasanya 32-44 karakter)
@@ -174,7 +183,7 @@ def extract_solana_ca_simple(message_text):
             # Validasi karakter (hanya base58)
             valid_chars = set('123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz')
             if all(c in valid_chars for c in match):
-                logger.info(f"Potential Solana address found: {match}")
+                logger.info(f"✅ Valid Solana address found: {match}")
                 return match
             else:
                 logger.debug(f"String '{match}' contains invalid base58 characters")
