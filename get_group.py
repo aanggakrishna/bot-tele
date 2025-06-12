@@ -2,8 +2,12 @@ import os
 import asyncio
 from telethon import TelegramClient
 from telethon.tl.types import Chat, Channel
+from dotenv import load_dotenv
 
 async def get_telegram_group_ids():
+    # Load environment variables dari file .env
+    load_dotenv()
+    
     # Ambil API_ID dan API_HASH dari environment variables
     api_id = os.getenv('API_ID')
     api_hash = os.getenv('API_HASH')
