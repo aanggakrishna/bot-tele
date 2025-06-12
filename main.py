@@ -48,6 +48,18 @@ solana_service.init_solana_config(
     amount_to_buy_sol=AMOUNT_TO_BUY_SOL, # Kirim AMOUNT_TO_BUY_SOL
     slippage_bps=SLIPPAGE_BPS,
     jupiter_api_url=JUPITER_API_URL,
+)
+
+# --- Heartbeat Function ---
+async def heartbeat():
+    while True:
+        active_trades = await get_total_active_trades_count()
+        logger.info(f"Bot is running... Active trades: {active_trades}")
+        await asyncio.sleep(5)
+
+# Start heartbeat
+async def start_heartbeat():
+    asyncio.create_task(heartbeat())
     solana_private_key_base58=SOLANA_PRIVATE_KEY_BASE58
 )
 
@@ -274,6 +286,10 @@ async def main():
     logger.info("Starting Telegram client...")
     await client.start()
     logger.info("Telegram client started.")
+
+    # Start heartbeat
+    await start_heartbeat()
+    logger.info("Heartbeat started.")
 
     try:
         entity = await client.get_entity(GROUP_ID)
