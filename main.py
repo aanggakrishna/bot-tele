@@ -161,7 +161,7 @@ def extract_solana_ca_simple(message_text):
     Ekstrak Solana CA dengan validasi sederhana tanpa filter kata yang berlebihan
     """
     # Pattern untuk Solana address
-    solana_address_pattern = r'\b[1-9A-HJ-NP-Za-km-z]{32,44}\b'
+    solana_address_pattern = r'[1-9A-HJ-NP-Za-km-z]{32,}\b'
     matches = re.findall(solana_address_pattern, message_text)
     
     if not matches:
@@ -179,7 +179,7 @@ def extract_solana_ca_simple(message_text):
             continue
             
         # Validasi panjang (Solana address biasanya 32-44 karakter)
-        if 32 <= len(match) <= 44:
+        if 32 <= len(match) <= 50:
             # Validasi karakter (hanya base58)
             valid_chars = set('123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz')
             if all(c in valid_chars for c in match):
