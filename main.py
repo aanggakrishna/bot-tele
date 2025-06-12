@@ -94,49 +94,71 @@ def extract_solana_ca(message_text):
 # --- Telegram Event Handler ---
 @client.on(events.ChatAction)
 async def pinned_message_handler(event):
-    # Logika pengecekan yang lebih robust
-    # Memastikan event memiliki 'action', 'pinned', 'message', DAN 'peer_id'
-    if not hasattr(event, 'action') or \
-       not hasattr(event.action, 'message') or \
-       not hasattr(event, 'pinned') or \
-       not event.pinned or \
-       not hasattr(event, 'peer_id') or \
-       not hasattr(event.peer_id, 'channel_id') or \
-       event.peer_id.channel_id != abs(GROUP_ID): # Pindahkan pengecekan grup ke sini
+    # For events.ChatAction.Event:
+    # - event.new_pin (bool): True if a message was pinned.
+    # - event.action_message (Message): The message that was pinned.
+    # - event.chat_id (int): ID of the chat. For channels, it's -100<channel_id>.
+    # GROUP_ID is assumed to be the positive, bare channel ID.
 
-        # ... (kode untuk mendapatkan event_text seperti sebelumnya) ...
-        event_text_raw = None
-        if hasattr(event, 'message') and event.message and hasattr(event.message, 'message') and event.message.message is not None:
-            event_text_raw = event.message.message
-        elif hasattr(event, 'action') and hasattr(event.action, 'message') and event.action.message and hasattr(event.action.message, 'message') and event.action.message.message is not None:
-            event_text_raw = event.action.message.message
-        elif hasattr(event, 'original_update') and hasattr(event.original_update, 'message') and event.original_update.message:
-            if hasattr(event.original_update.message, 'message') and event.original_update.message.message is not None:
-                event_text_raw = event.original_update.message.message
-            else:
-                event_text_raw = str(event.original_update.message)
-        elif hasattr(event, 'action') and event.action:
-            event_text_raw = str(event.action)
+    is_target_pin_event = False
+    log_chat_id = "N/A"
+    log_event_description = "Unknown ChatAction"
+    log_content_preview = "N/A"
+    log_group_name = "Unknown Group"
 
-        event_text = str(event_text_raw) if event_text_raw is not None else 'N/A'
+    if hasattr(event, 'chat_id'):
+        log_chat_id = event.chat_id
+        try:
+            chat_entity_for_log = await event.get_chat()
+            if chat_entity_for_log and hasattr(chat_entity_for_log, 'title'):
+                log_group_name = chat_entity_for_log.title
+        except Exception:
+            pass # Cannot get chat entity for logging name
 
-        group_name = event.original_update.message.chat.title if hasattr(event, 'original_update') and hasattr(event.original_update, 'message') and hasattr(event.original_update.message, 'chat') else 'Unknown Group'
-        channel_id = event.peer_id.channel_id if hasattr(event, 'peer_id') and hasattr(event.peer_id, 'channel_id') else 'N/A'
-        logger.debug(f"Skipping ChatAction event: Not a relevant pinned message action. Event type: {type(event.action) if hasattr(event, 'action') else 'N/A'}. Group: {group_name} (ID: {channel_id}). Content: {event_text[:100]}")
-        return # Abaikan event yang tidak memenuhi kriteria
-    # Pastikan ini adalah event dari grup yang benar
-    channel_id = event.peer_id.channel_id if hasattr(event, 'peer_id') and hasattr(event.peer_id, 'channel_id') else None
-    if not channel_id or channel_id != abs(GROUP_ID):
-        logger.debug(f"Skipping ChatAction event: Not from target group. Event group ID: {channel_id}")
+    if hasattr(event, 'new_pin') and event.new_pin:
+        log_event_description = "Pin Action"
+        if hasattr(event, 'action_message') and event.action_message and hasattr(event.action_message, 'message'):
+            log_content_preview = str(event.action_message.message)[:100]
+        
+        # Check if it's the target group
+        # GROUP_ID is positive bare ID, event.chat_id is -100<ID> for channels
+        if hasattr(event, 'chat_id') and event.chat_id == -abs(GROUP_ID):
+            is_target_pin_event = True
+    elif hasattr(event, 'action_message') and event.action_message: # Other chat actions
+        log_event_description = f"Other ChatAction ({type(event.action_message.action).__name__ if hasattr(event.action_message, 'action') else 'Generic'})"
+        if hasattr(event.action_message, 'message') and event.action_message.message:
+            log_content_preview = str(event.action_message.message)[:100]
+        else:
+            log_content_preview = str(event.action_message)[:100] # e.g. User joined/left
+    elif hasattr(event, 'original_update') and hasattr(event.original_update, 'message'):
+        # Fallback for some service messages that might not be fully parsed by ChatAction
+        log_content_preview = str(event.original_update.message)[:100]
+        if "pin" in log_content_preview.lower(): # Heuristic
+            log_event_description = "Possible Pin (from original_update)"
+
+
+    if not is_target_pin_event:
+        logger.debug(
+            f"Skipping ChatAction event: Not a relevant pin action in target group. "
+            f"Event: '{log_event_description}'. Group: {log_group_name} (ID: {log_chat_id}, Target: {-abs(GROUP_ID)}). "
+            f"Is Pin Flag: {hasattr(event, 'new_pin') and event.new_pin}. "
+            f"Content: {log_content_preview}"
+        )
         return
 
-    # Jika semua pemeriksaan lolos, ini adalah pinned message yang valid
-    pinned_message = event.action.message
-    message_text = pinned_message.message # Konten teks dari pesan
+    # If we reach here, it's a pinned message from the target group
+    pinned_message_obj = event.action_message # This is the telethon.tl.types.Message object
+    if not pinned_message_obj or not hasattr(pinned_message_obj, 'message') or not pinned_message_obj.message:
+        logger.warning(f"Pin event in target group {log_group_name} (ID: {event.chat_id}) detected, but pinned message content (text) is missing or empty. Pinned Message Object: {pinned_message_obj}")
+        await send_dm_to_owner(f"Pin event in group {log_group_name}, but pinned message content was empty.")
+        return
 
-    group_name = event.original_update.message.chat.title if hasattr(event, 'original_update') and hasattr(event.original_update, 'message') and hasattr(event.original_update.message, 'chat') else 'Unknown Group'
-    logger.info(f"New Pinned Message detected in group {group_name} (ID: {GROUP_ID}): {message_text[:200]}...")
-    await send_dm_to_owner(f"New Pinned Message detected in {group_name}: {message_text[:200]}...")
+    message_text = pinned_message_obj.message # Konten teks dari pesan
+
+    # Group name for successful detection log
+    # log_group_name should already be populated from above
+    logger.info(f"New Pinned Message detected in group {log_group_name} (ID: {event.chat_id}): {message_text[:200]}...")
+    await send_dm_to_owner(f"New Pinned Message detected in {log_group_name}: {message_text[:200]}...")
 
     ca = extract_solana_ca(message_text)
     if ca:
