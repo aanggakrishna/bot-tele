@@ -54,8 +54,14 @@ solana_service.init_solana_config(
 # --- Heartbeat Function ---
 async def heartbeat():
     while True:
-        active_trades = await get_total_active_trades_count()
-        logger.info(f"Bot is running... Active trades: {active_trades}")
+        db = next(get_db())
+        try:
+            active_trades = get_total_active_trades_count(db)
+            logger.info(f"Bot is running... Active trades: {active_trades}")
+        except Exception as e:
+            logger.error(f"Error in heartbeat: {e}")
+        finally:
+            db.close()
         await asyncio.sleep(5)
 
 # Start heartbeat
