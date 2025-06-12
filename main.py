@@ -48,6 +48,7 @@ solana_service.init_solana_config(
     amount_to_buy_sol=AMOUNT_TO_BUY_SOL, # Kirim AMOUNT_TO_BUY_SOL
     slippage_bps=SLIPPAGE_BPS,
     jupiter_api_url=JUPITER_API_URL,
+    solana_private_key_base58=SOLANA_PRIVATE_KEY_BASE58
 )
 
 # --- Heartbeat Function ---
@@ -60,8 +61,6 @@ async def heartbeat():
 # Start heartbeat
 async def start_heartbeat():
     asyncio.create_task(heartbeat())
-    solana_private_key_base58=SOLANA_PRIVATE_KEY_BASE58
-)
 
 # Initialize Telegram Client
 client = TelegramClient('anon', API_ID, API_HASH)
