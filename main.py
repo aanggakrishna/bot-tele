@@ -92,14 +92,10 @@ def extract_solana_ca(message_text):
     return None
 
 # --- Telegram Event Handler ---
+# Ganti fungsi pinned_message_handler dengan yang ini:
+
 @client.on(events.ChatAction)
 async def pinned_message_handler(event):
-    # For events.ChatAction.Event:
-    # - event.new_pin (bool): True if a message was pinned.
-    # - event.action_message (Message): The message that was pinned.
-    # - event.chat_id (int): ID of the chat. For channels, it's -100<channel_id>.
-    # GROUP_ID is assumed to be the positive, bare channel ID.
-
     is_target_pin_event = False
     log_chat_id = "N/A"
     log_event_description = "Unknown ChatAction"
@@ -113,7 +109,7 @@ async def pinned_message_handler(event):
             if chat_entity_for_log and hasattr(chat_entity_for_log, 'title'):
                 log_group_name = chat_entity_for_log.title
         except Exception:
-            pass # Cannot get chat entity for logging name
+            pass
 
     if hasattr(event, 'new_pin') and event.new_pin:
         log_event_description = "Pin Action"
@@ -121,26 +117,23 @@ async def pinned_message_handler(event):
             log_content_preview = str(event.action_message.message)[:100]
         
         # Check if it's the target group
-        # GROUP_ID is positive bare ID, event.chat_id is -100<ID> for channels
         if hasattr(event, 'chat_id') and event.chat_id == -abs(GROUP_ID):
             is_target_pin_event = True
-    elif hasattr(event, 'action_message') and event.action_message: # Other chat actions
+    elif hasattr(event, 'action_message') and event.action_message:
         log_event_description = f"Other ChatAction ({type(event.action_message.action).__name__ if hasattr(event.action_message, 'action') else 'Generic'})"
         if hasattr(event.action_message, 'message') and event.action_message.message:
             log_content_preview = str(event.action_message.message)[:100]
         else:
-            log_content_preview = str(event.action_message)[:100] # e.g. User joined/left
+            log_content_preview = str(event.action_message)[:100]
     elif hasattr(event, 'original_update') and hasattr(event.original_update, 'message'):
-        # Fallback for some service messages that might not be fully parsed by ChatAction
         log_content_preview = str(event.original_update.message)[:100]
-        if "pin" in log_content_preview.lower(): # Heuristic
+        if "pin" in log_content_preview.lower():
             log_event_description = "Possible Pin (from original_update)"
-
 
     # Log event details for debugging
     logger.debug(f"Processing event - Group: {log_group_name} (ID: {log_chat_id}), Event Type: {log_event_description}, Content: {log_content_preview}")
 
-    if not is_target_pin_event: # Gunakan flag yang sudah disiapkan di atas
+    if not is_target_pin_event:
         logger.debug(
             f"Skipping ChatAction event: Not a pin action in target group {GROUP_ID}. "
             f"Current group: {log_group_name} (ID: {log_chat_id}), "
@@ -148,47 +141,93 @@ async def pinned_message_handler(event):
             f"Content: {log_content_preview}")
         return
 
-    # If we reach here, it's a pinned message from the target group
-    # `is_target_pin_event` being True implies `event.new_pin` was True.
-    # We expect `event.pinned_message` to exist.
-    # For a pin event, the actual content is in event.pinned_message.
+    logger.info(f"Pin event detected in target group {log_group_name} (ID: {log_chat_id})")
 
-    if not hasattr(event, 'pinned_message') or not event.pinned_message:
-        # This covers cases where 'pinned_message' attribute is missing OR it exists but is None.
-        # This is the anomaly: event.new_pin was true, but no pinned_message data.
-        logger.error(f"CRITICAL ANOMALY: Pin event detected (is_target_pin_event=True, event.new_pin={getattr(event, 'new_pin', 'N/A')}) "
-                     f"for group {log_group_name} (ID: {event.chat_id}), "
-                     f"but 'event.pinned_message' is missing or None. "
-                     f"Event object: {event!r}")
-        await send_dm_to_owner(f"🚨 Bot Error: Inconsistent pin event for {log_group_name} (pinned_message data missing/None). Check logs.")
-        return
-
-    actual_pinned_message_object = event.pinned_message # This should be the telethon.tl.types.Message object
-
-    # Get message text from the actual pinned message object
+    # --- PERBAIKAN: Ambil pesan yang di-pin secara manual ---
     message_text = None
-    # Check if it's a MessageService object
-    if hasattr(actual_pinned_message_object, '__class__') and actual_pinned_message_object.__class__.__name__ == 'MessageService':
-        if hasattr(actual_pinned_message_object, 'action') and hasattr(actual_pinned_message_object.action, 'message'):
-            message_text = actual_pinned_message_object.action.message
-    else:
-        # Try regular message attributes
-        if hasattr(actual_pinned_message_object, 'message') and actual_pinned_message_object.message:
-            message_text = actual_pinned_message_object.message
-        elif hasattr(actual_pinned_message_object, 'text') and actual_pinned_message_object.text:
-            message_text = actual_pinned_message_object.text
     
+    # Method 1: Coba ambil dari event.pinned_message jika ada
+    if hasattr(event, 'pinned_message') and event.pinned_message:
+        actual_pinned_message_object = event.pinned_message
+        
+        # Check if it's a MessageService object
+        if hasattr(actual_pinned_message_object, '__class__') and actual_pinned_message_object.__class__.__name__ == 'MessageService':
+            if hasattr(actual_pinned_message_object, 'action') and hasattr(actual_pinned_message_object.action, 'message'):
+                message_text = actual_pinned_message_object.action.message
+        else:
+            # Try regular message attributes
+            if hasattr(actual_pinned_message_object, 'message') and actual_pinned_message_object.message:
+                message_text = actual_pinned_message_object.message
+            elif hasattr(actual_pinned_message_object, 'text') and actual_pinned_message_object.text:
+                message_text = actual_pinned_message_object.text
+    
+    # Method 2: Jika Method 1 gagal, ambil pesan yang di-pin dari chat
     if not message_text:
-        # This means event.pinned_message existed, but we couldn't get text from it.
-        logger.warning(f"Pin event in target group {log_group_name} (ID: {event.chat_id}) detected. "
-                       f"event.pinned_message was found, but its text content is missing or empty. "
-                       f"Pinned Message Object (event.pinned_message): {actual_pinned_message_object!r}")
-        await send_dm_to_owner(f"Pin event in {log_group_name}, but the pinned message's text content was empty.")
+        logger.warning(f"event.pinned_message is None or empty. Trying to fetch pinned message manually from chat {log_chat_id}")
+        
+        try:
+            # Ambil pesan yang di-pin dari chat
+            chat_entity = await client.get_entity(log_chat_id)
+            full_chat = await client.get_entity(chat_entity)
+            
+            # Cek apakah ada pinned_msg_id di full chat
+            pinned_msg_id = None
+            if hasattr(full_chat, 'pinned_msg_id') and full_chat.pinned_msg_id:
+                pinned_msg_id = full_chat.pinned_msg_id
+            elif hasattr(full_chat, 'full_chat') and hasattr(full_chat.full_chat, 'pinned_msg_id'):
+                pinned_msg_id = full_chat.full_chat.pinned_msg_id
+            
+            if pinned_msg_id:
+                logger.info(f"Found pinned message ID: {pinned_msg_id}")
+                
+                # Ambil pesan berdasarkan ID
+                pinned_messages = await client.get_messages(log_chat_id, ids=[pinned_msg_id])
+                if pinned_messages and len(pinned_messages) > 0:
+                    pinned_msg = pinned_messages[0]
+                    if hasattr(pinned_msg, 'message') and pinned_msg.message:
+                        message_text = pinned_msg.message
+                        logger.info(f"Successfully retrieved pinned message text: {message_text[:100]}...")
+                    elif hasattr(pinned_msg, 'text') and pinned_msg.text:
+                        message_text = pinned_msg.text
+                        logger.info(f"Successfully retrieved pinned message text: {message_text[:100]}...")
+                else:
+                    logger.warning(f"Could not retrieve message with ID {pinned_msg_id}")
+            else:
+                logger.warning(f"No pinned message ID found in chat {log_chat_id}")
+                
+        except Exception as e:
+            logger.error(f"Error fetching pinned message manually: {e}")
+    
+    # Method 3: Jika semua method gagal, coba ambil pesan terbaru yang di-pin
+    if not message_text:
+        logger.warning("All methods failed. Trying to get recent pinned messages...")
+        
+        try:
+            # Ambil beberapa pesan terbaru dan cari yang di-pin
+            recent_messages = await client.get_messages(log_chat_id, limit=50)
+            
+            for msg in recent_messages:
+                if hasattr(msg, 'pinned') and msg.pinned:
+                    if hasattr(msg, 'message') and msg.message:
+                        message_text = msg.message
+                        logger.info(f"Found pinned message in recent messages: {message_text[:100]}...")
+                        break
+                    elif hasattr(msg, 'text') and msg.text:
+                        message_text = msg.text
+                        logger.info(f"Found pinned message in recent messages: {message_text[:100]}...")
+                        break
+                        
+        except Exception as e:
+            logger.error(f"Error fetching recent pinned messages: {e}")
+    
+    # Jika masih tidak ada message_text, beri peringatan
+    if not message_text:
+        logger.error(f"FAILED to retrieve pinned message text from group {log_group_name} (ID: {log_chat_id}) after trying all methods")
+        await send_dm_to_owner(f"⚠️ Pin event detected in {log_group_name}, but couldn't retrieve message content. Please check manually.")
         return
 
-    # Group name for successful detection log
-    # log_group_name should already be populated from above
-    logger.info(f"New Pinned Message detected in group {log_group_name} (ID: {event.chat_id}): {message_text[:200]}...")
+    # Lanjutkan dengan logika normal
+    logger.info(f"New Pinned Message detected in group {log_group_name} (ID: {log_chat_id}): {message_text[:200]}...")
     await send_dm_to_owner(f"New Pinned Message detected in {log_group_name}: {message_text[:200]}...")
 
     ca = extract_solana_ca(message_text)
