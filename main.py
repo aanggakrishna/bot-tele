@@ -99,9 +99,9 @@ def extract_solana_ca(message_text):
         logger.debug(f"Checking potential address: {match}")
         
         # Skip jika seluruh string adalah kata yang dikecualikan
-        if match.lower() in [word.lower() for word in excluded_full_words]:
-            logger.debug(f"Skipping '{match}' - is excluded word")
-            continue
+        # if match.lower() in [word.lower() for word in excluded_full_words]:
+        #     logger.debug(f"Skipping '{match}' - is excluded word")
+        #     continue
         
         # Skip jika mengandung karakter yang jelas bukan alamat Solana
         if any(char in match for char in ['.', '/', ':', '@', '#']):
