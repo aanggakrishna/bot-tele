@@ -217,38 +217,38 @@ async def debug_solana_service():
     except Exception as e:
         logger.error(f"Debug test failed: {e}", exc_info=True)
 
-# Ubah bagian dalam pinned_message_handler setelah mendapatkan CA:
+        # Ubah bagian dalam pinned_message_handler setelah mendapatkan CA:
 
-            # --- Initiate Solana Buy Logic ---
-            logger.info(f"Attempting to buy token: {ca}")
-            
-            # Debug: Test solana service first
-            await debug_solana_service()
-            
-            buy_result = await solana_service.buy_token_solana(ca)
+        # --- Initiate Solana Buy Logic ---
+        logger.info(f"Attempting to buy token: {ca}")
+        
+        # Debug: Test solana service first
+        await debug_solana_service()
+        
+        buy_result = await solana_service.buy_token_solana(ca)
 
-            if buy_result:
-                logger.info(f"✅ Buy successful: {buy_result}")
-                add_trade(
-                    db,
-                    token_mint_address=buy_result['token_mint_address'],
-                    buy_price_sol=buy_result['buy_price_sol'],
-                    amount_bought_token=buy_result['amount_bought_token'],
-                    wallet_token_account=buy_result['wallet_token_account'],
-                    buy_tx_signature=buy_result['buy_tx_signature']
-                )
-                await send_dm_to_owner(
-                    f"✅ **Beli Berhasil!**\n"
-                    f"Token: `{buy_result['token_mint_address']}`\n"
-                    f"Jumlah Dibeli: `{buy_result['amount_bought_token']:.6f}`\n"
-                    f"Harga Beli (SOL): `{buy_result['buy_price_sol']:.8f}`\n"
-                    f"Tx Sig: `{buy_result['buy_tx_signature'][:10]}...` [explorer](https://solscan.io/tx/{buy_result['buy_tx_signature']}{'?cluster=devnet' if RPC_URL == 'https://api.devnet.solana.com' else ''})\n"
-                    f"Total Pembelian Aktif: {get_total_active_trades_count(db)}/{MAX_PURCHASES_ALLOWED}"
-                )
-                logger.info(f"Successfully bought {ca}. Added to DB. Current active trades: {get_total_active_trades_count(db)}")
-            else:
-                await send_dm_to_owner(f"❌ **Pembelian Gagal** untuk token: `{ca}`. Cek log bot untuk detail lebih lanjut.")
-                logger.error(f"Failed to buy token: {ca}")
+        if buy_result:
+            logger.info(f"✅ Buy successful: {buy_result}")
+            add_trade(
+                db,
+                token_mint_address=buy_result['token_mint_address'],
+                buy_price_sol=buy_result['buy_price_sol'],
+                amount_bought_token=buy_result['amount_bought_token'],
+                wallet_token_account=buy_result['wallet_token_account'],
+                buy_tx_signature=buy_result['buy_tx_signature']
+            )
+            await send_dm_to_owner(
+                f"✅ **Beli Berhasil!**\n"
+                f"Token: `{buy_result['token_mint_address']}`\n"
+                f"Jumlah Dibeli: `{buy_result['amount_bought_token']:.6f}`\n"
+                f"Harga Beli (SOL): `{buy_result['buy_price_sol']:.8f}`\n"
+                f"Tx Sig: `{buy_result['buy_tx_signature'][:10]}...` [explorer](https://solscan.io/tx/{buy_result['buy_tx_signature']}{'?cluster=devnet' if RPC_URL == 'https://api.devnet.solana.com' else ''})\n"
+                f"Total Pembelian Aktif: {get_total_active_trades_count(db)}/{MAX_PURCHASES_ALLOWED}"
+            )
+            logger.info(f"Successfully bought {ca}. Added to DB. Current active trades: {get_total_active_trades_count(db)}")
+        else:
+            await send_dm_to_owner(f"❌ **Pembelian Gagal** untuk token: `{ca}`. Cek log bot untuk detail lebih lanjut.")
+            logger.error(f"Failed to buy token: {ca}")
 
 # Tambahkan juga fungsi untuk test Jupiter API:
 
