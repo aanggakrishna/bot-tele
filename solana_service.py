@@ -80,79 +80,79 @@ def get_latest_blockhash() -> str | None:
         return None
 
 async def get_token_price_sol(token_mint_address: PublicKey, max_retries: int = 3) -> float | None:
-    for attempt in range(max_retries):
-        try:
-            # Get quote from token_mint_address to SOL
-            input_mint = str(token_mint_address)
-            output_mint = "So11111111111111111111111111111111111111112" # SOL
-            
-            # Validate token info and check if it's a valid SPL token
-            token_info_response = SOLANA_CLIENT.get_token_supply(token_mint_address)
-            if not token_info_response.value:
-                logger.error(f"Invalid token or cannot fetch token info for {token_mint_address}")
-                return None
+    try:
+        for attempt in range(max_retries):
+            try:
+                # Get quote from token_mint_address to SOL
+                input_mint = str(token_mint_address)
+                output_mint = "So11111111111111111111111111111111111111112" # SOL
                 
-            token_info = token_info_response.value
-            token_decimals = token_info.decimals
-            
-            # Basic token validation
-            if token_decimals > 18 or token_decimals < 0:
-                logger.warning(f"Suspicious token decimals ({token_decimals}) for {token_mint_address}")
-                return None
-            
-            # Request quote for 1 unit of the token (1 * 10^decimals)
-            amount_in = int(1 * (10**token_decimals))
-            if amount_in == 0:
-                logger.warning(f"Amount in for quote is zero for token {token_mint_address}. Cannot get price.")
-                return None
-
-        async with aiohttp.ClientSession() as session:
-                try:
-                    # Add timeout for API request
-                    async with session.get(
-                        f"{JUPITER_API_URL}/quote?inputMint={input_mint}&outputMint={output_mint}&amount={amount_in}&slippageBps=0",
-                        timeout=aiohttp.ClientTimeout(total=10)
-                    ) as response:
-                        response.raise_for_status()
-                        data = await response.json()
-                        
-                        # Validate response data
-                        if not all(key in data for key in ['outAmount', 'priceImpactPct']):
-                            logger.error(f"Invalid Jupiter API response format for {token_mint_address}")
-                            return None
-                        
-                        sol_amount_out = int(data['outAmount']) / (10**9) # SOL has 9 decimals
-                        price_impact = float(data['priceImpactPct'])
-                        
-                        # Check liquidity (price impact)
-                        if price_impact > 1.0:  # More than 1% price impact
-                            logger.warning(f"High price impact ({price_impact}%) for {token_mint_address}")
-                            return None
-                            
-                        if sol_amount_out > 0:
-                            logger.info(f"Fetched token {token_mint_address} price: {sol_amount_out:.9f} SOL (Impact: {price_impact}%)")
-                            return sol_amount_out
-                        else:
-                            logger.warning(f"Jupiter API returned 0 outAmount for {token_mint_address} price.")
-                            return None
-                            
-                except asyncio.TimeoutError:
-                    logger.error(f"Timeout fetching price for {token_mint_address}")
-                    if attempt < max_retries - 1:
-                        await asyncio.sleep(1)  # Wait before retry
-                        continue
+                # Validate token info and check if it's a valid SPL token
+                token_info_response = SOLANA_CLIENT.get_token_supply(token_mint_address)
+                if not token_info_response.value:
+                    logger.error(f"Invalid token or cannot fetch token info for {token_mint_address}")
                     return None
-    except aiohttp.ClientError as e:
-        logger.error(f"HTTP error fetching token price from Jupiter: {e}")
-        if attempt < max_retries - 1:
-            await asyncio.sleep(1)  # Wait before retry
-            continue
+                    
+                token_info = token_info_response.value
+                token_decimals = token_info.decimals
+                
+                # Basic token validation
+                if token_decimals > 18 or token_decimals < 0:
+                    logger.warning(f"Suspicious token decimals ({token_decimals}) for {token_mint_address}")
+                    return None
+                
+                # Request quote for 1 unit of the token (1 * 10^decimals)
+                amount_in = int(1 * (10**token_decimals))
+                if amount_in == 0:
+                    logger.warning(f"Amount in for quote is zero for token {token_mint_address}. Cannot get price.")
+                    return None
+
+                async with aiohttp.ClientSession() as session:
+                    try:
+                        # Add timeout for API request
+                        async with session.get(
+                            f"{JUPITER_API_URL}/quote?inputMint={input_mint}&outputMint={output_mint}&amount={amount_in}&slippageBps=0",
+                            timeout=aiohttp.ClientTimeout(total=10)
+                        ) as response:
+                            response.raise_for_status()
+                            data = await response.json()
+                            
+                            # Validate response data
+                            if not all(key in data for key in ['outAmount', 'priceImpactPct']):
+                                logger.error(f"Invalid Jupiter API response format for {token_mint_address}")
+                                continue
+                            
+                            sol_amount_out = int(data['outAmount']) / (10**9) # SOL has 9 decimals
+                            price_impact = float(data['priceImpactPct'])
+                            
+                            # Check liquidity (price impact)
+                            if price_impact > 1.0:  # More than 1% price impact
+                                logger.warning(f"High price impact ({price_impact}%) for {token_mint_address}")
+                                continue
+                                
+                            if sol_amount_out > 0:
+                                logger.info(f"Fetched token {token_mint_address} price: {sol_amount_out:.9f} SOL (Impact: {price_impact}%)")
+                                return sol_amount_out
+                            else:
+                                logger.warning(f"Jupiter API returned 0 outAmount for {token_mint_address} price.")
+                                continue
+                                
+                    except (asyncio.TimeoutError, aiohttp.ClientError) as e:
+                        logger.error(f"API error for {token_mint_address}: {str(e)}")
+                        if attempt < max_retries - 1:
+                            await asyncio.sleep(1)
+                            continue
+                        return None
+            except Exception as e:
+                logger.error(f"Unexpected error for {token_mint_address}: {str(e)}")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(1)
+                    continue
+                return None
+        return None
     except Exception as e:
-        logger.error(f"Error getting token price in SOL for {token_mint_address}: {e}")
-        if attempt < max_retries - 1:
-            await asyncio.sleep(1)  # Wait before retry
-            continue
-    return None
+        logger.error(f"Critical error in get_token_price_sol: {str(e)}")
+        return None
 
 # Rate limiting untuk API calls
 _last_api_call = 0
