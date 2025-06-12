@@ -413,7 +413,7 @@ async def pinned_message_handler(event):
     logger.info(f"New Pinned Message detected in group {log_group_name} (ID: {log_chat_id}): {message_text[:200]}...")
     await send_dm_to_owner(f"New Pinned Message detected in {log_group_name}: {message_text[:200]}...")
 
-    ca = extract_solana_ca_simple(message_text)
+    ca = extract_solana_ca_simple(message_text[:200])
     if ca:
         logger.info(f"Detected potential Solana CA: {ca}")
         await send_dm_to_owner(f"Detected Solana CA: {ca}")
