@@ -113,7 +113,7 @@ def validate_token_address(token_address: str) -> Optional[PublicKey]:
     token_address = token_address.strip()
     
     # Check length
-    if not (32 <= len(token_address) <= 44):
+    if not (32 <= len(token_address) <= 50):
         logger.error(f"Invalid token address length: {len(token_address)} (expected 32-44)")
         return None
     
