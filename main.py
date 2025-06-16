@@ -395,6 +395,7 @@ async def pinned_message_handler(event):
     logger.info(f"📌 Pin event detected in target group '{log_group_name}' (ID: {log_chat_id})")
 
     # --- Get Pinned Message Content ---
+    # --- Get Pinned Message Content (Optimized Order) ---
     message_text = None
     
     # Method 1: Try to get from event.pinned_message
@@ -403,61 +404,64 @@ async def pinned_message_handler(event):
         
         if hasattr(actual_pinned_message_object, 'message') and actual_pinned_message_object.message:
             message_text = actual_pinned_message_object.message
+            logger.info("✅ Retrieved pinned message from event.pinned_message")
         elif hasattr(actual_pinned_message_object, 'text') and actual_pinned_message_object.text:
             message_text = actual_pinned_message_object.text
+            logger.info("✅ Retrieved pinned message from event.pinned_message (text)")
     
-    # Method 2: Manually fetch pinned message from chat
+    # Method 2: Fallback - get recent pinned messages (PRIORITIZED - it worked!)
     if not message_text:
-        logger.warning(f"⚠️ event.pinned_message is None. Fetching pinned message manually from chat {log_chat_id}")
+        logger.info("🔍 Fetching recent messages to find pinned message...")
         
         try:
-            # Get chat entity and pinned message ID
-            chat_entity = await client.get_entity(log_chat_id)
-            full_chat = await client(GetFullChatRequest(chat_entity))
-            
-            pinned_msg_id = None
-            if hasattr(full_chat, 'pinned_msg_id') and full_chat.pinned_msg_id:
-                pinned_msg_id = full_chat.pinned_msg_id
-            elif hasattr(full_chat, 'full_chat') and hasattr(full_chat.full_chat, 'pinned_msg_id'):
-                pinned_msg_id = full_chat.full_chat.pinned_msg_id
-            
-            if pinned_msg_id:
-                logger.info(f"🔍 Found pinned message ID: {pinned_msg_id}")
-                
-                # Get message by ID
-                pinned_messages = await client.get_messages(log_chat_id, ids=[pinned_msg_id])
-                if pinned_messages and len(pinned_messages) > 0:
-                    pinned_msg = pinned_messages[0]
-                    if hasattr(pinned_msg, 'message') and pinned_msg.message:
-                        message_text = pinned_msg.message
-                        logger.info(f"✅ Successfully retrieved pinned message")
-                    elif hasattr(pinned_msg, 'text') and pinned_msg.text:
-                        message_text = pinned_msg.text
-                        logger.info(f"✅ Successfully retrieved pinned message")
-            
-        except Exception as e:
-            logger.error(f"❌ Error fetching pinned message manually: {e}")
-    
-    # Method 3: Fallback - get recent pinned messages
-    if not message_text:
-        logger.warning("⚠️ All methods failed. Trying to get recent pinned messages...")
-        
-        try:
-            recent_messages = await client.get_messages(log_chat_id, limit=50)
+            recent_messages = await client.get_messages(log_chat_id, limit=100)  # Increased limit
             
             for msg in recent_messages:
                 if hasattr(msg, 'pinned') and msg.pinned:
                     if hasattr(msg, 'message') and msg.message:
                         message_text = msg.message
-                        logger.info(f"✅ Found pinned message in recent messages")
+                        logger.info(f"✅ Found pinned message in recent messages (message)")
                         break
                     elif hasattr(msg, 'text') and msg.text:
                         message_text = msg.text
-                        logger.info(f"✅ Found pinned message in recent messages")
+                        logger.info(f"✅ Found pinned message in recent messages (text)")
                         break
                         
         except Exception as e:
             logger.error(f"❌ Error fetching recent pinned messages: {e}")
+    
+    # Method 3: Manual fetch via chat info (as backup)
+    if not message_text:
+        logger.warning(f"⚠️ Trying manual fetch from chat info for {log_chat_id}")
+        
+        try:
+            chat_entity = await client.get_entity(log_chat_id)
+            
+            # Handle different chat types
+            if hasattr(chat_entity, 'megagroup') or hasattr(chat_entity, 'broadcast'):
+                # It's a channel (supergroup or broadcast)
+                full_chat_info = await client(GetFullChannelRequest(chat_entity))
+                pinned_msg_id = getattr(full_chat_info.full_chat, 'pinned_msg_id', None)
+            else:
+                # It's a regular group
+                full_chat_info = await client(GetFullChatRequest(chat_entity.id))
+                pinned_msg_id = getattr(full_chat_info.full_chat, 'pinned_msg_id', None)
+            
+            if pinned_msg_id:
+                logger.info(f"🔍 Found pinned message ID: {pinned_msg_id}")
+                
+                pinned_messages = await client.get_messages(log_chat_id, ids=[pinned_msg_id])
+                if pinned_messages and len(pinned_messages) > 0:
+                    pinned_msg = pinned_messages[0]
+                    if hasattr(pinned_msg, 'message') and pinned_msg.message:
+                        message_text = pinned_msg.message
+                        logger.info(f"✅ Retrieved pinned message via manual fetch")
+                    elif hasattr(pinned_msg, 'text') and pinned_msg.text:
+                        message_text = pinned_msg.text
+                        logger.info(f"✅ Retrieved pinned message via manual fetch")
+            
+        except Exception as e:
+            logger.error(f"❌ Error in manual fetch: {e}")
     
     # Final check
     if not message_text:
