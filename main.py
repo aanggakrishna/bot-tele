@@ -8,7 +8,6 @@ from telethon.tl.functions.channels import GetFullChannelRequest
 from telethon.tl.functions.messages import GetFullChatRequest
 from dotenv import load_dotenv
 from loguru import logger
-import aiocron
 import aiohttp
 
 # Local imports
@@ -63,18 +62,31 @@ async def send_dm_to_owner(message):
 async def test_jupiter_api():
     """Test Jupiter API connectivity"""
     try:
+        logger.info("Testing Jupiter API connectivity...")
+        jupiter_url = os.getenv('JUPITER_API_URL', 'https://quote-api.jup.ag/v6')
+        
         async with aiohttp.ClientSession() as session:
-            async with session.get(f"{JUPITER_API_URL}/tokens", timeout=10) as response:
+            # Test simple quote request
+            url = f"{jupiter_url}/quote"
+            params = {
+                'inputMint': 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263',  # BONK
+                'outputMint': 'So11111111111111111111111111111111111111112',   # WSOL
+                'amount': 1000000,  # 1 BONK (6 decimals)
+                'slippageBps': 500
+            }
+            
+            async with session.get(url, params=params, timeout=10) as response:
                 if response.status == 200:
-                    logger.info("✅ Jupiter API is accessible")
+                    data = await response.json()
+                    logger.info(f"✅ Jupiter API is working - Quote: {data.get('outAmount', 'unknown')} lamports")
                     return True
                 else:
-                    logger.error(f"❌ Jupiter API error: {response.status}")
+                    logger.warning(f"⚠️ Jupiter API returned status: {response.status}")
                     return False
+                    
     except Exception as e:
         logger.error(f"❌ Jupiter API test failed: {e}")
         return False
-
 
 async def debug_solana_service():
     """Debug function to test solana service"""
@@ -107,23 +119,186 @@ async def debug_solana_service():
         logger.error(f"Debug test failed: {e}")
         return False
 
-# --- Heartbeat Function ---
-async def heartbeat():
-    """Background heartbeat to check bot status"""
-    while True:
-        db = next(get_db())
-        try:
-            active_trades = get_total_active_trades_count(db)
-            logger.info(f"💓 Bot heartbeat - Active trades: {active_trades}/{MAX_PURCHASES_ALLOWED}")
-        except Exception as e:
-            logger.error(f"Error in heartbeat: {e}")
-        finally:
-            db.close()
-        await asyncio.sleep(300)  # 5 minutes
+# --- Background Task Functions (without decorators) ---
+async def dm_heartbeat():
+    """Send heartbeat DM to owner"""
+    db = next(get_db())
+    try:
+        active_count = get_total_active_trades_count(db)
+        await send_dm_to_owner(f"💓 **Bot Heartbeat**\n\nStatus: `Online`\nActive trades: `{active_count}/{MAX_PURCHASES_ALLOWED}`")
+        logger.info("📱 Sent DM Heartbeat.")
+    except Exception as e:
+        logger.error(f"❌ Error in DM heartbeat: {e}")
+    finally:
+        db.close()
 
-async def start_heartbeat():
-    """Start heartbeat task"""
-    asyncio.create_task(heartbeat())
+async def monitor_trades_and_sell():
+    """Monitor active trades and execute sell logic"""
+    db = next(get_db())
+    try:
+        active_trades = get_active_trades(db)
+        if not active_trades:
+            return
+
+        logger.info(f"📊 Monitoring {len(active_trades)} active trades...")
+
+        for trade in active_trades:
+            token_mint_address = trade.token_mint_address
+            amount_bought_token = trade.amount_bought_token
+            buy_price_sol = trade.buy_price_sol
+            buy_timestamp = trade.buy_timestamp
+            wallet_token_account = trade.wallet_token_account
+            platform = trade.platform or 'unknown'
+
+            logger.debug(f"🔍 Checking trade: {token_mint_address} ({platform})")
+
+            # Get current price
+            try:
+                current_token_price_sol = await solana_service.get_token_price_sol(PublicKey(token_mint_address))
+                if current_token_price_sol is None:
+                    logger.warning(f"⚠️ Could not fetch current price for {token_mint_address}. Skipping.")
+                    continue
+            except Exception as e:
+                logger.error(f"❌ Error fetching price for {token_mint_address}: {e}")
+                continue
+
+            # Calculate profit/loss percentage
+            if buy_price_sol <= 0:
+                logger.warning(f"⚠️ Invalid buy price for {token_mint_address}: {buy_price_sol}")
+                continue
+                
+            profit_loss_percent = (current_token_price_sol - buy_price_sol) / buy_price_sol
+
+            logger.info(f"📈 {platform.upper()} {token_mint_address}: Buy={buy_price_sol:.8f} SOL, Current={current_token_price_sol:.8f} SOL, P/L={profit_loss_percent*100:.2f}%")
+
+            should_sell = False
+            sell_reason = ""
+
+            # 1. Take Profit Check
+            if profit_loss_percent >= TAKE_PROFIT_PERCENT:
+                should_sell = True
+                sell_reason = f"Take Profit ({TAKE_PROFIT_PERCENT*100:.1f}%)"
+                logger.info(f"🎯 Take profit triggered for {token_mint_address}: {profit_loss_percent*100:.2f}% >= {TAKE_PROFIT_PERCENT*100:.1f}%")
+            
+            # 2. Stop Loss Check
+            elif profit_loss_percent <= -STOP_LOSS_PERCENT:
+                should_sell = True
+                sell_reason = f"Stop Loss ({STOP_LOSS_PERCENT*100:.1f}%)"
+                logger.info(f"🛑 Stop loss triggered for {token_mint_address}: {profit_loss_percent*100:.2f}% <= -{STOP_LOSS_PERCENT*100:.1f}%")
+            
+            # 3. Time-based Sell (1 day with no significant movement)
+            elif (datetime.utcnow() - buy_timestamp) > timedelta(days=1):
+                # Define "significant movement" - e.g., price hasn't moved +/- 5% in 24h
+                if abs(profit_loss_percent) < 0.05:  # Less than 5% movement
+                    should_sell = True
+                    sell_reason = "Time-based Sell (1 day, no significant movement)"
+                    logger.info(f"⏰ Time-based sell triggered for {token_mint_address}: 1 day elapsed, minimal movement")
+
+            if should_sell:
+                logger.warning(f"🚨 Initiating sell for {token_mint_address} due to: {sell_reason}")
+                
+                platform_emoji = {
+                    'pumpfun': '🚀',
+                    'moonshot': '🌙', 
+                    'raydium': '⚡',
+                    'jupiter': '🪐',
+                    'generic': '🔄'
+                }.get(platform, '🔄')
+                
+                await send_dm_to_owner(
+                    f"🚨 **Initiating Sell**\n\n"
+                    f"{platform_emoji} Platform: `{platform.upper()}`\n"
+                    f"🪙 Token: `{token_mint_address}`\n"
+                    f"📊 Reason: `{sell_reason}`\n"
+                    f"📈 P/L: `{profit_loss_percent*100:.2f}%`"
+                )
+
+                try:
+                    sell_result = await multi_platform_service.sell_token_multi_platform(
+                        token_mint_address, amount_bought_token, wallet_token_account, platform
+                    )
+
+                    if sell_result:
+                        # Determine status based on sell reason
+                        if "Profit" in sell_reason:
+                            status = "sold_profit"
+                        elif "Loss" in sell_reason:
+                            status = "sold_sl"
+                        else:
+                            status = "sold_time"
+
+                        updated_trade = update_trade_status(
+                            db,
+                            trade.id,
+                            status=status,
+                            sell_price_sol=sell_result['sell_price_sol'],
+                            sell_tx_signature=sell_result['sell_tx_signature']
+                        )
+                        
+                        # Calculate final profit/loss
+                        final_profit_percent = ((updated_trade.sell_price_sol - updated_trade.buy_price_sol) / updated_trade.buy_price_sol) * 100 if updated_trade.buy_price_sol else 0
+                        profit_sol = (updated_trade.sell_price_sol - updated_trade.buy_price_sol) * amount_bought_token if updated_trade.sell_price_sol and updated_trade.buy_price_sol else 0
+
+                        explorer_url = f"https://solscan.io/tx/{sell_result['sell_tx_signature']}"
+                        if 'devnet' in RPC_URL:
+                            explorer_url += "?cluster=devnet"
+
+                        await send_dm_to_owner(
+                            f"✅ **Sell Successful!**\n\n"
+                            f"{platform_emoji} Platform: `{platform.upper()}`\n"
+                            f"🪙 Token: `{token_mint_address}`\n"
+                            f"📊 Reason: `{sell_reason}`\n"
+                            f"💰 Sell Price: `{sell_result['sell_price_sol']:.8f} SOL`\n"
+                            f"📈 Final P/L: `{final_profit_percent:.2f}%`\n"
+                            f"💎 SOL P/L: `{profit_sol:.6f} SOL`\n"
+                            f"🔗 [View Transaction]({explorer_url})\n"
+                            f"📊 Active Trades: `{get_total_active_trades_count(db)}/{MAX_PURCHASES_ALLOWED}`"
+                        )
+                        logger.info(f"✅ Successfully sold {token_mint_address}. Status: {updated_trade.status}")
+                    else:
+                        await send_dm_to_owner(
+                            f"❌ **Sell Failed**\n\n"
+                            f"{platform_emoji} Platform: `{platform.upper()}`\n"
+                            f"🪙 Token: `{token_mint_address}`\n"
+                            f"Check bot logs for details."
+                        )
+                        logger.error(f"❌ Failed to sell token: {token_mint_address}")
+                        
+                except Exception as e:
+                    logger.error(f"❌ Error selling {token_mint_address}: {e}", exc_info=True)
+                    await send_dm_to_owner(f"🚨 **Sell Error**\n\nToken: `{token_mint_address}`\nError: `{str(e)[:200]}`")
+
+    except Exception as e:
+        logger.error(f"❌ Error in monitor_trades_and_sell: {e}", exc_info=True)
+    finally:
+        db.close()
+
+# --- Background Tasks Runner ---
+async def background_tasks():
+    """Run background tasks manually with asyncio"""
+    async def periodic_monitoring():
+        """Monitor trades every 30 seconds"""
+        while True:
+            try:
+                await monitor_trades_and_sell()
+            except Exception as e:
+                logger.error(f"❌ Error in periodic monitoring: {e}")
+            await asyncio.sleep(30)  # 30 seconds
+    
+    async def periodic_heartbeat():
+        """Send heartbeat every 30 minutes"""
+        while True:
+            try:
+                await dm_heartbeat()
+            except Exception as e:
+                logger.error(f"❌ Error in periodic heartbeat: {e}")
+            await asyncio.sleep(1800)  # 30 minutes
+    
+    # Start both tasks concurrently
+    await asyncio.gather(
+        periodic_monitoring(),
+        periodic_heartbeat()
+    )
 
 # --- Telegram Event Handler ---
 @client.on(events.ChatAction)
@@ -330,223 +505,7 @@ async def pinned_message_handler(event):
         logger.info("ℹ️ No valid Solana CA found in the pinned message.")
         await send_dm_to_owner("ℹ️ **No Solana CA Found**\n\nNo valid contract address found in the pinned message.")
 
-# --- Scheduled Tasks (using aiocron) ---
-
-# Heartbeat DM (every 30 minutes)
-@aiocron.crontab('*/30 * * * *')  # Fixed: removed seconds field
-async def dm_heartbeat():
-    """Send heartbeat DM to owner"""
-    db = next(get_db())
-    try:
-        active_count = get_total_active_trades_count(db)
-        await send_dm_to_owner(f"💓 **Bot Heartbeat**\n\nStatus: `Online`\nActive trades: `{active_count}/{MAX_PURCHASES_ALLOWED}`")
-        logger.info("📱 Sent DM Heartbeat.")
-    except Exception as e:
-        logger.error(f"❌ Error in DM heartbeat: {e}")
-    finally:
-        db.close()
-
-
-# Price monitoring and sell logic (every minute instead of 30 seconds)
-@aiocron.crontab('* * * * *')  # Fixed: every minute
-async def monitor_trades_and_sell():
-    """Monitor active trades and execute sell logic"""
-    db = next(get_db())
-    try:
-        active_trades = get_active_trades(db)
-        if not active_trades:
-            return
-
-        logger.info(f"📊 Monitoring {len(active_trades)} active trades...")
-
-        for trade in active_trades:
-            token_mint_address = trade.token_mint_address
-            amount_bought_token = trade.amount_bought_token
-            buy_price_sol = trade.buy_price_sol
-            buy_timestamp = trade.buy_timestamp
-            wallet_token_account = trade.wallet_token_account
-            platform = trade.platform or 'unknown'
-
-            logger.debug(f"🔍 Checking trade: {token_mint_address} ({platform})")
-
-            # Get current price
-            try:
-                current_token_price_sol = await solana_service.get_token_price_sol(PublicKey(token_mint_address))
-                if current_token_price_sol is None:
-                    logger.warning(f"⚠️ Could not fetch current price for {token_mint_address}. Skipping.")
-                    continue
-            except Exception as e:
-                logger.error(f"❌ Error fetching price for {token_mint_address}: {e}")
-                continue
-
-            # Calculate profit/loss percentage
-            if buy_price_sol <= 0:
-                logger.warning(f"⚠️ Invalid buy price for {token_mint_address}: {buy_price_sol}")
-                continue
-                
-            profit_loss_percent = (current_token_price_sol - buy_price_sol) / buy_price_sol
-
-            logger.info(f"📈 {platform.upper()} {token_mint_address}: Buy={buy_price_sol:.8f} SOL, Current={current_token_price_sol:.8f} SOL, P/L={profit_loss_percent*100:.2f}%")
-
-            should_sell = False
-            sell_reason = ""
-
-            # 1. Take Profit Check
-            if profit_loss_percent >= TAKE_PROFIT_PERCENT:
-                should_sell = True
-                sell_reason = f"Take Profit ({TAKE_PROFIT_PERCENT*100:.1f}%)"
-                logger.info(f"🎯 Take profit triggered for {token_mint_address}: {profit_loss_percent*100:.2f}% >= {TAKE_PROFIT_PERCENT*100:.1f}%")
-            
-            # 2. Stop Loss Check
-            elif profit_loss_percent <= -STOP_LOSS_PERCENT:
-                should_sell = True
-                sell_reason = f"Stop Loss ({STOP_LOSS_PERCENT*100:.1f}%)"
-                logger.info(f"🛑 Stop loss triggered for {token_mint_address}: {profit_loss_percent*100:.2f}% <= -{STOP_LOSS_PERCENT*100:.1f}%")
-            
-            # 3. Time-based Sell (1 day with no significant movement)
-            elif (datetime.utcnow() - buy_timestamp) > timedelta(days=1):
-                # Define "significant movement" - e.g., price hasn't moved +/- 5% in 24h
-                if abs(profit_loss_percent) < 0.05:  # Less than 5% movement
-                    should_sell = True
-                    sell_reason = "Time-based Sell (1 day, no significant movement)"
-                    logger.info(f"⏰ Time-based sell triggered for {token_mint_address}: 1 day elapsed, minimal movement")
-
-            if should_sell:
-                logger.warning(f"🚨 Initiating sell for {token_mint_address} due to: {sell_reason}")
-                
-                platform_emoji = {
-                    'pumpfun': '🚀',
-                    'moonshot': '🌙', 
-                    'raydium': '⚡',
-                    'jupiter': '🪐',
-                    'generic': '🔄'
-                }.get(platform, '🔄')
-                
-                await send_dm_to_owner(
-                    f"🚨 **Initiating Sell**\n\n"
-                    f"{platform_emoji} Platform: `{platform.upper()}`\n"
-                    f"🪙 Token: `{token_mint_address}`\n"
-                    f"📊 Reason: `{sell_reason}`\n"
-                    f"📈 P/L: `{profit_loss_percent*100:.2f}%`"
-                )
-
-                try:
-                    sell_result = await multi_platform_service.sell_token_multi_platform(
-                        token_mint_address, amount_bought_token, wallet_token_account, platform
-                    )
-
-                    if sell_result:
-                        # Determine status based on sell reason
-                        if "Profit" in sell_reason:
-                            status = "sold_profit"
-                        elif "Loss" in sell_reason:
-                            status = "sold_sl"
-                        else:
-                            status = "sold_time"
-
-                        updated_trade = update_trade_status(
-                            db,
-                            trade.id,
-                            status=status,
-                            sell_price_sol=sell_result['sell_price_sol'],
-                            sell_tx_signature=sell_result['sell_tx_signature']
-                        )
-                        
-                        # Calculate final profit/loss
-                        final_profit_percent = ((updated_trade.sell_price_sol - updated_trade.buy_price_sol) / updated_trade.buy_price_sol) * 100 if updated_trade.buy_price_sol else 0
-                        profit_sol = (updated_trade.sell_price_sol - updated_trade.buy_price_sol) * amount_bought_token if updated_trade.sell_price_sol and updated_trade.buy_price_sol else 0
-
-                        explorer_url = f"https://solscan.io/tx/{sell_result['sell_tx_signature']}"
-                        if 'devnet' in RPC_URL:
-                            explorer_url += "?cluster=devnet"
-
-                        await send_dm_to_owner(
-                            f"✅ **Sell Successful!**\n\n"
-                            f"{platform_emoji} Platform: `{platform.upper()}`\n"
-                            f"🪙 Token: `{token_mint_address}`\n"
-                            f"📊 Reason: `{sell_reason}`\n"
-                            f"💰 Sell Price: `{sell_result['sell_price_sol']:.8f} SOL`\n"
-                            f"📈 Final P/L: `{final_profit_percent:.2f}%`\n"
-                            f"💎 SOL P/L: `{profit_sol:.6f} SOL`\n"
-                            f"🔗 [View Transaction]({explorer_url})\n"
-                            f"📊 Active Trades: `{get_total_active_trades_count(db)}/{MAX_PURCHASES_ALLOWED}`"
-                        )
-                        logger.info(f"✅ Successfully sold {token_mint_address}. Status: {updated_trade.status}")
-                    else:
-                        await send_dm_to_owner(
-                            f"❌ **Sell Failed**\n\n"
-                            f"{platform_emoji} Platform: `{platform.upper()}`\n"
-                            f"🪙 Token: `{token_mint_address}`\n"
-                            f"Check bot logs for details."
-                        )
-                        logger.error(f"❌ Failed to sell token: {token_mint_address}")
-                        
-                except Exception as e:
-                    logger.error(f"❌ Error selling {token_mint_address}: {e}", exc_info=True)
-                    await send_dm_to_owner(f"🚨 **Sell Error**\n\nToken: `{token_mint_address}`\nError: `{str(e)[:200]}`")
-
-    except Exception as e:
-        logger.error(f"❌ Error in monitor_trades_and_sell: {e}", exc_info=True)
-    finally:
-        db.close()
-
-async def test_jupiter_api():
-    """Test Jupiter API connectivity"""
-    try:
-        logger.info("Testing Jupiter API connectivity...")
-        jupiter_url = os.getenv('JUPITER_API_URL', 'https://quote-api.jup.ag/v6')
-        
-        async with aiohttp.ClientSession() as session:
-            # Test simple quote request
-            url = f"{jupiter_url}/quote"
-            params = {
-                'inputMint': 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263',  # BONK
-                'outputMint': 'So11111111111111111111111111111111111111112',   # WSOL
-                'amount': 1000000,  # 1 BONK (6 decimals)
-                'slippageBps': 500
-            }
-            
-            async with session.get(url, params=params, timeout=10) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    logger.info(f"✅ Jupiter API is working - Quote: {data.get('outAmount', 'unknown')} lamports")
-                    return True
-                else:
-                    logger.warning(f"⚠️ Jupiter API returned status: {response.status}")
-                    return False
-                    
-    except Exception as e:
-        logger.error(f"❌ Jupiter API test failed: {e}")
-        return False
-# Alternative: Manual task scheduling without cron seconds
-async def background_tasks():
-    """Run background tasks manually with asyncio"""
-    async def periodic_monitoring():
-        """Monitor trades every 30 seconds"""
-        while True:
-            try:
-                await monitor_trades_and_sell()
-            except Exception as e:
-                logger.error(f"❌ Error in periodic monitoring: {e}")
-            await asyncio.sleep(30)  # 30 seconds
-    
-    async def periodic_heartbeat():
-        """Send heartbeat every 30 minutes"""
-        while True:
-            try:
-                await dm_heartbeat()
-            except Exception as e:
-                logger.error(f"❌ Error in periodic heartbeat: {e}")
-            await asyncio.sleep(1800)  # 30 minutes
-    
-    # Start both tasks concurrently
-    await asyncio.gather(
-        periodic_monitoring(),
-        periodic_heartbeat()
-    )
-
-# ... keep all other existing code until main function ...
-
+# --- Main Function ---
 async def main():
     """Main function"""
     try:
