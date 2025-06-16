@@ -94,7 +94,7 @@ JUPITER_API_URL = os.getenv('JUPITER_API_URL', 'https://quote-api.jup.ag/v6')
 
 # --- Initialize Services ---
 logger.info("Initializing Solana service...")
-iinit_success = init_solana_config_from_env()
+init_success = init_solana_config_from_env()
 if not init_success:
     logger.warning("⚠️ Solana service initialization had issues, continuing in monitoring mode")
 
