@@ -333,7 +333,7 @@ async def pinned_message_handler(event):
 # --- Scheduled Tasks (using aiocron) ---
 
 # Heartbeat DM (every 30 minutes)
-@aiocron.crontab('*/30 * * * *')
+@aiocron.crontab('*/30 * * * *')  # Fixed: removed seconds field
 async def dm_heartbeat():
     """Send heartbeat DM to owner"""
     db = next(get_db())
@@ -346,8 +346,9 @@ async def dm_heartbeat():
     finally:
         db.close()
 
-# Price monitoring and sell logic (every 30 seconds)
-@aiocron.crontab('*/30 * * * * *')
+
+# Price monitoring and sell logic (every minute instead of 30 seconds)
+@aiocron.crontab('* * * * *')  # Fixed: every minute
 async def monitor_trades_and_sell():
     """Monitor active trades and execute sell logic"""
     db = next(get_db())
@@ -517,7 +518,35 @@ async def test_jupiter_api():
     except Exception as e:
         logger.error(f"❌ Jupiter API test failed: {e}")
         return False
-# --- Main Application ---
+# Alternative: Manual task scheduling without cron seconds
+async def background_tasks():
+    """Run background tasks manually with asyncio"""
+    async def periodic_monitoring():
+        """Monitor trades every 30 seconds"""
+        while True:
+            try:
+                await monitor_trades_and_sell()
+            except Exception as e:
+                logger.error(f"❌ Error in periodic monitoring: {e}")
+            await asyncio.sleep(30)  # 30 seconds
+    
+    async def periodic_heartbeat():
+        """Send heartbeat every 30 minutes"""
+        while True:
+            try:
+                await dm_heartbeat()
+            except Exception as e:
+                logger.error(f"❌ Error in periodic heartbeat: {e}")
+            await asyncio.sleep(1800)  # 30 minutes
+    
+    # Start both tasks concurrently
+    await asyncio.gather(
+        periodic_monitoring(),
+        periodic_heartbeat()
+    )
+
+# ... keep all other existing code until main function ...
+
 async def main():
     """Main function"""
     try:
@@ -547,9 +576,6 @@ async def main():
         if not solana_test_success:
             logger.warning("⚠️ Solana service test failed")
         
-        # Initialize Telegram client
-        client = TelegramClient('session', API_ID, API_HASH)
-        
         # Start the client
         await client.start()
         logger.info("✅ Telegram client started")
@@ -558,100 +584,17 @@ async def main():
         me = await client.get_me()
         logger.info(f"👤 Logged in as: {me.first_name} (@{me.username})")
         
-        # Set up event handlers
-        @client.on(events.NewMessage(chats=[GROUP_ID]))
-        async def handle_new_message(event):
-            try:
-                message_text = event.message.message
-                if not message_text:
-                    return
-                
-                logger.info(f"📨 New message: {message_text[:100]}...")
-                
-                # Extract Solana contract address
-                contract_addresses = extract_solana_ca_enhanced(message_text)
-                
-                if contract_addresses:
-                    for ca in contract_addresses:
-                        logger.info(f"🎯 Contract address found: {ca}")
-                        
-                        # Check if we already have active trades for this token
-                        db = next(get_db())
-                        active_trades = get_active_trades(db)
-                        
-                        # Check if we've reached max purchases
-                        total_active = get_total_active_trades_count(db)
-                        max_allowed = int(os.getenv('MAX_PURCHASES_ALLOWED', '2'))
-                        
-                        if total_active >= max_allowed:
-                            logger.warning(f"⚠️ Max purchases reached: {total_active}/{max_allowed}")
-                            continue
-                        
-                        # Check if we already have this token
-                        existing_trade = any(trade.token_mint_address == ca for trade in active_trades)
-                        if existing_trade:
-                            logger.info(f"⚠️ Already have active trade for {ca}")
-                            continue
-                        
-                        # Create trading service and execute buy
-                        trading_service = MultiPlatformTradingService()
-                        success = await trading_service.buy_token_and_track(ca)
-                        
-                        if success:
-                            logger.info(f"✅ Successfully bought and tracking {ca}")
-                        else:
-                            logger.warning(f"❌ Failed to buy {ca}")
-                
-            except Exception as e:
-                logger.error(f"❌ Error handling message: {e}")
-        
-        # Start monitoring for stop-loss and take-profit
-        @aiocron.crontab('*/30 * * * * *')  # Every 30 seconds
-        async def monitor_positions():
-            try:
-                db = next(get_db())
-                active_trades = get_active_trades(db)
-                
-                if not active_trades:
-                    return
-                
-                logger.info(f"📊 Monitoring {len(active_trades)} active positions...")
-                
-                trading_service = MultiPlatformTradingService()
-                
-                for trade in active_trades:
-                    try:
-                        should_sell, reason = await trading_service.should_sell_token(
-                            trade.token_mint_address,
-                            trade.buy_price_sol,
-                            trade.amount_bought_token
-                        )
-                        
-                        if should_sell:
-                            logger.info(f"🔔 Selling {trade.token_mint_address}: {reason}")
-                            
-                            success = await trading_service.sell_token_and_update(
-                                trade.token_mint_address,
-                                trade.amount_bought_token,
-                                trade.wallet_token_account
-                            )
-                            
-                            if success:
-                                logger.info(f"✅ Successfully sold {trade.token_mint_address}")
-                            else:
-                                logger.warning(f"❌ Failed to sell {trade.token_mint_address}")
-                    
-                    except Exception as trade_error:
-                        logger.error(f"❌ Error monitoring trade {trade.token_mint_address}: {trade_error}")
-                
-            except Exception as e:
-                logger.error(f"❌ Error in position monitoring: {e}")
-        
         logger.info("🎯 Bot is running and monitoring...")
         logger.info(f"📺 Monitoring group: {GROUP_ID}")
         
+        # Start background tasks
+        background_task = asyncio.create_task(background_tasks())
+        
         # Keep the client running
-        await client.run_until_disconnected()
+        try:
+            await client.run_until_disconnected()
+        finally:
+            background_task.cancel()
         
     except Exception as e:
         logger.error(f"❌ Fatal error: {e}")
