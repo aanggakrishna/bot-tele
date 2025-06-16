@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 from loguru import logger
 import aiohttp
 from solana_service import solana_service, init_solana_config_from_env, get_token_price_sol
-from trading_service import MultiPlatformTradingService, extract_solana_ca_enhanced
+from trading_service import MultiPlatformTradingService, extract_solana_ca_enhanced, is_valid_solana_address
 
 
 # Local imports
@@ -187,20 +187,19 @@ async def debug_solana_service():
     """Debug function to test solana service"""
     try:
         # Test with a known valid token address (not WSOL)
-        # Using BONK token as example (common Solana token)
         test_address = "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263"  # BONK token
         
         logger.info(f"Testing solana service with token address: {test_address}")
         
         # Skip the price test if wallet is not initialized
-        if not solana_service.solana_service_instance.keypair:
+        if not solana_service.keypair:  # Fix: remove .solana_service_instance
             logger.info("⚠️ Wallet not initialized - skipping price test")
             logger.info("✅ Solana service initialized in monitoring mode")
             return True
         
         # Test price fetch only if wallet is available
         try:
-            price = await solana_service.get_token_price_sol(PublicKey.from_string(test_address))
+            price = await get_token_price_sol(test_address)  # Use wrapper function
             if price:
                 logger.info(f"✅ Price fetch successful: {price} SOL per token")
             else:
@@ -275,10 +274,8 @@ async def monitor_trades_and_sell():
 
             # Validate token address before processing
             try:
-                # Validate the token mint address format
-                from trading_service import MultiPlatformTradingService
-                temp_service = MultiPlatformTradingService(None)
-                if not temp_service.is_valid_solana_address(token_mint_address):
+                # Use the standalone validation function
+                if not is_valid_solana_address(token_mint_address):
                     logger.error(f"❌ Invalid token address in database: {token_mint_address}")
                     # Mark trade as error and skip
                     update_trade_status(db, trade.id, "error", 0, "invalid_address")
@@ -288,9 +285,10 @@ async def monitor_trades_and_sell():
                 logger.error(f"❌ Error validating token address {token_mint_address}: {e}")
                 continue
 
+            # Rest of the function stays the same...
             # Get current price with proper error handling
             try:
-                current_token_price_sol = await solana_service.get_token_price_sol(token_mint_address)
+                current_token_price_sol = await get_token_price_sol(token_mint_address)
                 if current_token_price_sol is None:
                     logger.warning(f"⚠️ Could not fetch current price for {token_mint_address}. Skipping.")
                     continue

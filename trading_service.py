@@ -12,7 +12,7 @@ class MultiPlatformTradingService:
         """Buy token from detected platform"""
         try:
             # Validate token address
-            if not self._is_valid_solana_address(token_mint):
+            if not self.is_valid_solana_address(token_mint):  # Make it public
                 logger.error(f"❌ Invalid token address: {token_mint}")
                 return None
             
@@ -38,7 +38,7 @@ class MultiPlatformTradingService:
                                       wallet_account: str, platform: str) -> Optional[Dict]:
         """Sell token from platform"""
         try:
-            if not self._is_valid_solana_address(token_mint):
+            if not self.is_valid_solana_address(token_mint):  # Make it public
                 logger.error(f"❌ Invalid token address: {token_mint}")
                 return None
             
@@ -61,7 +61,7 @@ class MultiPlatformTradingService:
         else:
             return 'pumpfun'  # Default
     
-    def _is_valid_solana_address(self, address: str) -> bool:
+    def is_valid_solana_address(self, address: str) -> bool:  # Make it public (remove _)
         """Validate Solana address"""
         try:
             if not (32 <= len(address) <= 44):
@@ -103,3 +103,20 @@ def extract_solana_ca_enhanced(text: str) -> Optional[str]:
             continue
     
     return None
+
+# Add a simple validation function for use in main.py
+def is_valid_solana_address(address: str) -> bool:
+    """Standalone function to validate Solana address"""
+    try:
+        if not (32 <= len(address) <= 44):
+            return False
+        
+        decoded = base58.b58decode(address)
+        if len(decoded) != 32:
+            return False
+        
+        Pubkey.from_string(address)
+        return True
+        
+    except Exception:
+        return False
