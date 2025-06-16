@@ -33,11 +33,14 @@ class SolanaService:
             private_key_base58 = os.getenv('SOLANA_PRIVATE_KEY_BASE58')
             wallet_path = os.getenv('PRIVATE_KEY_PATH')
             
-            if private_key_base58 and private_key_base58 != 'your_solana_private_key_base58':
+            if private_key_base58 and private_key_base58 not in ['your_solana_private_key_base58', 'your_base58_private_key_from_generate_wallet_script']:
                 # Use base58 private key
                 try:
-                    private_key_bytes = base58.b58decode(private_key_base58)
-                    self.keypair = Keypair.from_bytes(private_key_bytes)
+                    secret_key_bytes = base58.b58decode(private_key_base58)
+                    if len(secret_key_bytes) != 32:
+                        raise ValueError(f"Invalid secret key length: {len(secret_key_bytes)}. Expected 32 bytes.")
+                    
+                    self.keypair = Keypair.from_bytes(secret_key_bytes)
                     logger.info(f"🔑 Wallet loaded from base58 key: {self.keypair.pubkey()}")
                 except Exception as e:
                     logger.error(f"❌ Error loading base58 private key: {e}")
@@ -47,15 +50,25 @@ class SolanaService:
                 try:
                     with open(wallet_path, 'r') as f:
                         wallet_data = json.load(f)
-                    private_key_bytes = bytes(wallet_data)
-                    self.keypair = Keypair.from_bytes(private_key_bytes)
+                    
+                    # Handle different wallet formats
+                    if len(wallet_data) == 32:
+                        # Secret key only
+                        secret_key_bytes = bytes(wallet_data)
+                    elif len(wallet_data) == 64:
+                        # Full keypair, take first 32 bytes
+                        secret_key_bytes = bytes(wallet_data[:32])
+                    else:
+                        raise ValueError(f"Invalid wallet data length: {len(wallet_data)}")
+                    
+                    self.keypair = Keypair.from_bytes(secret_key_bytes)
                     logger.info(f"🔑 Wallet loaded from file: {self.keypair.pubkey()}")
                 except Exception as e:
                     logger.error(f"❌ Error loading wallet file: {e}")
                     raise
             else:
-                logger.warning("⚠️ No valid private key found. Some features may not work.")
-                logger.info("Please set SOLANA_PRIVATE_KEY_BASE58 in your .env file")
+                logger.warning("⚠️ No valid private key found. Bot will run in monitoring mode only.")
+                logger.info("Please set SOLANA_PRIVATE_KEY_BASE58 in your .env file for trading functionality")
                 
         except Exception as e:
             logger.error(f"❌ Failed to initialize Solana config: {e}")
@@ -78,7 +91,7 @@ class SolanaService:
                     'slippageBps': self.slippage_bps
                 }
                 
-                async with session.get(url, params=params) as response:
+                async with session.get(url, params=params, timeout=10) as response:
                     if response.status == 200:
                         data = await response.json()
                         out_amount = int(data['outAmount'])
@@ -93,6 +106,22 @@ class SolanaService:
             logger.error(f"Error getting token price: {e}")
             return None
 
+    async def get_wallet_balance(self) -> Optional[float]:
+        """Get wallet SOL balance"""
+        try:
+            if not self.keypair:
+                return None
+                
+            response = await self.rpc_client.get_balance(self.keypair.pubkey())
+            if response.value is not None:
+                balance_sol = response.value / 1_000_000_000  # Convert lamports to SOL
+                return balance_sol
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error getting wallet balance: {e}")
+            return None
+
     async def buy_token_solana(self, token_mint_address: str) -> Optional[Dict[str, Any]]:
         """Buy token using Jupiter swap"""
         try:
@@ -100,10 +129,20 @@ class SolanaService:
             
             # Validate inputs
             if not self.keypair:
-                raise ValueError("Wallet not initialized")
+                raise ValueError("Wallet not initialized - cannot execute trades")
+            
+            # Check wallet balance
+            balance = await self.get_wallet_balance()
+            if balance is None:
+                raise ValueError("Could not fetch wallet balance")
+            
+            sol_amount = float(os.getenv('AMOUNT_TO_BUY_SOL', '0.001'))
+            if balance < sol_amount:
+                raise ValueError(f"Insufficient balance. Need {sol_amount} SOL, have {balance} SOL")
+            
+            logger.info(f"💰 Wallet balance: {balance} SOL, buying with: {sol_amount} SOL")
             
             # Get quote from Jupiter
-            sol_amount = float(os.getenv('AMOUNT_TO_BUY_SOL', '0.01'))
             lamports = int(sol_amount * 1_000_000_000)  # Convert SOL to lamports
             
             quote = await self._get_jupiter_quote(
@@ -116,6 +155,8 @@ class SolanaService:
             if not quote:
                 logger.error("Failed to get Jupiter quote")
                 return None
+            
+            logger.info(f"📊 Quote received: {quote.get('outAmount', 'unknown')} tokens for {sol_amount} SOL")
             
             # Get swap transaction
             swap_tx = await self._get_jupiter_swap_transaction(quote)
@@ -131,12 +172,13 @@ class SolanaService:
             
             # Calculate results
             output_amount = int(quote['outAmount'])
-            price_per_token = sol_amount / (output_amount / 1_000_000) if output_amount > 0 else 0
+            tokens_received = output_amount / 1_000_000  # Assuming 6 decimals
+            price_per_token = sol_amount / tokens_received if tokens_received > 0 else 0
             
             result = {
                 'token_mint_address': token_mint_address,
                 'buy_price_sol': price_per_token,
-                'amount_bought_token': output_amount / 1_000_000,  # Assuming 6 decimals
+                'amount_bought_token': tokens_received,
                 'wallet_token_account': str(self.keypair.pubkey()),
                 'buy_tx_signature': tx_signature
             }
@@ -154,6 +196,9 @@ class SolanaService:
         try:
             logger.info(f"🔄 Initiating sell for token: {token_mint_address}")
             
+            if not self.keypair:
+                raise ValueError("Wallet not initialized - cannot execute trades")
+            
             # Convert amount to proper decimals
             amount_lamports = int(amount_to_sell * 1_000_000)  # Assuming 6 decimals
             
@@ -169,6 +214,8 @@ class SolanaService:
                 logger.error("Failed to get Jupiter sell quote")
                 return None
             
+            logger.info(f"📊 Sell quote received: {quote.get('outAmount', 'unknown')} lamports for {amount_to_sell} tokens")
+            
             # Get swap transaction
             swap_tx = await self._get_jupiter_swap_transaction(quote)
             if not swap_tx:
@@ -183,10 +230,11 @@ class SolanaService:
             
             # Calculate results
             output_sol = int(quote['outAmount']) / 1_000_000_000  # Convert lamports to SOL
+            price_per_token = output_sol / amount_to_sell if amount_to_sell > 0 else 0
             
             result = {
                 'token_mint_address': token_mint_address,
-                'sell_price_sol': output_sol / amount_to_sell if amount_to_sell > 0 else 0,
+                'sell_price_sol': price_per_token,
                 'amount_sold_token': amount_to_sell,
                 'sol_received': output_sol,
                 'sell_tx_signature': tx_signature
@@ -213,7 +261,7 @@ class SolanaService:
                     'swapMode': swap_mode
                 }
                 
-                async with session.get(url, params=params) as response:
+                async with session.get(url, params=params, timeout=15) as response:
                     if response.status == 200:
                         return await response.json()
                     else:
@@ -235,7 +283,7 @@ class SolanaService:
                     'wrapAndUnwrapSol': True
                 }
                 
-                async with session.post(url, json=data) as response:
+                async with session.post(url, json=data, timeout=15) as response:
                     if response.status == 200:
                         result = await response.json()
                         return result.get('swapTransaction')
@@ -254,9 +302,14 @@ class SolanaService:
             transaction_bytes = base64.b64decode(transaction_base64)
             transaction = VersionedTransaction.from_bytes(transaction_bytes)
             
-            # Sign transaction
-            signed_transaction = self.keypair.sign_message(transaction.message.serialize())
-            transaction.signatures[0] = signed_transaction
+            # Sign transaction - this might need adjustment based on solders version
+            try:
+                # Method 1: Try signing the transaction directly
+                signed_tx = self.keypair.sign_message(transaction.message.serialize())
+                transaction.signatures[0] = signed_tx
+            except Exception as sign_e:
+                logger.error(f"❌ Error signing transaction: {sign_e}")
+                return None
             
             # Send transaction
             response = await self.rpc_client.send_transaction(transaction)
@@ -266,7 +319,7 @@ class SolanaService:
                 logger.info(f"✅ Transaction sent: {tx_signature}")
                 
                 # Wait for confirmation
-                await asyncio.sleep(2)
+                await asyncio.sleep(3)
                 
                 # Simple confirmation check
                 try:
