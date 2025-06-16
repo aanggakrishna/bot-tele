@@ -126,7 +126,7 @@ async def dm_heartbeat():
     try:
         active_count = get_total_active_trades_count(db)
         
-        # Get fresh group info for heartbeat
+        # Get fresh group info for heartbeat with safe checking
         group_info = await get_group_info(GROUP_ID)
         
         heartbeat_message = (
@@ -137,6 +137,14 @@ async def dm_heartbeat():
             f"📊 Active trades: `{active_count}/{MAX_PURCHASES_ALLOWED}`\n"
             f"⏰ Time: `{datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC`"
         )
+        
+        # Add optional info if available
+        if group_info.get('username'):
+            heartbeat_message += f"\n🔗 @{group_info['username']}"
+        
+        participants_count = group_info.get('participants_count', 0)
+        if participants_count and participants_count > 0:
+            heartbeat_message += f"\n👥 {participants_count} members"
         
         await send_dm_to_owner(heartbeat_message)
         logger.info(f"📱 Sent DM Heartbeat for group: {group_info['title']}")
@@ -354,14 +362,167 @@ async def pinned_message_handler(event):
 
     logger.info(f"📌 Pin event detected in target group '{log_group_name}' (ID: {log_chat_id})")
 
-    # ... keep all the rest of the pinned_message_handler function the same ...
+    # --- Get Pinned Message Content ---
+    message_text = None
+    
+    # Method 1: Try to get from event.pinned_message
+    if hasattr(event, 'pinned_message') and event.pinned_message:
+        actual_pinned_message_object = event.pinned_message
+        
+        if hasattr(actual_pinned_message_object, 'message') and actual_pinned_message_object.message:
+            message_text = actual_pinned_message_object.message
+        elif hasattr(actual_pinned_message_object, 'text') and actual_pinned_message_object.text:
+            message_text = actual_pinned_message_object.text
+    
+    # Method 2: Manually fetch pinned message from chat
+    if not message_text:
+        logger.warning(f"⚠️ event.pinned_message is None. Fetching pinned message manually from chat {log_chat_id}")
+        
+        try:
+            # Get chat entity and pinned message ID
+            chat_entity = await client.get_entity(log_chat_id)
+            full_chat = await client(GetFullChatRequest(chat_entity))
+            
+            pinned_msg_id = None
+            if hasattr(full_chat, 'pinned_msg_id') and full_chat.pinned_msg_id:
+                pinned_msg_id = full_chat.pinned_msg_id
+            elif hasattr(full_chat, 'full_chat') and hasattr(full_chat.full_chat, 'pinned_msg_id'):
+                pinned_msg_id = full_chat.full_chat.pinned_msg_id
+            
+            if pinned_msg_id:
+                logger.info(f"🔍 Found pinned message ID: {pinned_msg_id}")
+                
+                # Get message by ID
+                pinned_messages = await client.get_messages(log_chat_id, ids=[pinned_msg_id])
+                if pinned_messages and len(pinned_messages) > 0:
+                    pinned_msg = pinned_messages[0]
+                    if hasattr(pinned_msg, 'message') and pinned_msg.message:
+                        message_text = pinned_msg.message
+                        logger.info(f"✅ Successfully retrieved pinned message")
+                    elif hasattr(pinned_msg, 'text') and pinned_msg.text:
+                        message_text = pinned_msg.text
+                        logger.info(f"✅ Successfully retrieved pinned message")
+            
+        except Exception as e:
+            logger.error(f"❌ Error fetching pinned message manually: {e}")
+    
+    # Method 3: Fallback - get recent pinned messages
+    if not message_text:
+        logger.warning("⚠️ All methods failed. Trying to get recent pinned messages...")
+        
+        try:
+            recent_messages = await client.get_messages(log_chat_id, limit=50)
+            
+            for msg in recent_messages:
+                if hasattr(msg, 'pinned') and msg.pinned:
+                    if hasattr(msg, 'message') and msg.message:
+                        message_text = msg.message
+                        logger.info(f"✅ Found pinned message in recent messages")
+                        break
+                    elif hasattr(msg, 'text') and msg.text:
+                        message_text = msg.text
+                        logger.info(f"✅ Found pinned message in recent messages")
+                        break
+                        
+        except Exception as e:
+            logger.error(f"❌ Error fetching recent pinned messages: {e}")
+    
+    # Final check
+    if not message_text:
+        logger.error(f"❌ FAILED to retrieve pinned message text from group {log_group_name}")
+        await send_dm_to_owner(f"⚠️ **Pin Event Detected**\n\nGroup: `{log_group_name}`\n❌ Could not retrieve message content. Please check manually.")
+        return
 
-    # Update the success notification to include group name
+    # Continue with normal logic
+    logger.info(f"📄 New Pinned Message detected: {message_text[:200]}...")
+    await send_dm_to_owner(f"📌 **New Pinned Message**\n\nGroup: `{log_group_name}`\nContent: `{message_text[:200]}...`")
+
+    # Extract Solana CA using enhanced detection
+    ca = extract_solana_ca_enhanced(message_text)
     if ca:
         logger.info(f"🪙 Detected potential Solana CA in '{log_group_name}': {ca}")
         await send_dm_to_owner(f"🔍 **Solana CA Detected**\n\nGroup: `{log_group_name}`\nToken: `{ca}`\nProcessing purchase...")
-        
-        # ... keep the rest of the buy logic the same ...
+
+        db = next(get_db())
+        try:
+            # Check purchase limits
+            active_trades_count = get_total_active_trades_count(db)
+            if active_trades_count >= MAX_PURCHASES_ALLOWED:
+                await send_dm_to_owner(
+                    f"⛔ **Purchase Limit Reached**\n\n"
+                    f"Active trades: {active_trades_count}/{MAX_PURCHASES_ALLOWED}\n"
+                    f"Cannot buy more until existing positions are sold."
+                )
+                logger.warning("Purchase limit reached. Skipping purchase.")
+                return
+
+            # Check if token already exists
+            existing_trade = db.query(Trade).filter(Trade.token_mint_address == ca).first()
+            if existing_trade and existing_trade.status == "active":
+                await send_dm_to_owner(
+                    f"⚠️ **Token Already Active**\n\n"
+                    f"Token: `{ca}`\n"
+                    f"Platform: `{existing_trade.platform or 'Unknown'}`\n"
+                    f"Status: `{existing_trade.status}`"
+                )
+                logger.warning(f"Token {ca} is already an active trade. Skipping purchase.")
+                return
+
+            # --- Initiate Multi-Platform Buy Logic ---
+            logger.info(f"🚀 Attempting to buy token: {ca}")
+            await send_dm_to_owner(f"🔄 **Starting Purchase**\n\nToken: `{ca}`\nAmount: `{AMOUNT_TO_BUY_SOL} SOL`")
+            
+            buy_result = await multi_platform_service.buy_token_multi_platform(ca, message_text)
+
+            if buy_result:
+                # Add trade to database with platform info
+                add_trade(
+                    db,
+                    token_mint_address=buy_result['token_mint_address'],
+                    buy_price_sol=buy_result['buy_price_sol'],
+                    amount_bought_token=buy_result['amount_bought_token'],
+                    wallet_token_account=buy_result['wallet_token_account'],
+                    buy_tx_signature=buy_result['buy_tx_signature'],
+                    platform=buy_result.get('platform', 'unknown'),
+                    bonding_curve_complete=buy_result.get('bonding_curve_complete')
+                )
+                
+                # Send success notification
+                platform_emoji = {
+                    'pumpfun': '🚀',
+                    'moonshot': '🌙', 
+                    'raydium': '⚡',
+                    'jupiter': '🪐',
+                    'generic': '🔄'
+                }.get(buy_result.get('platform', 'generic'), '🔄')
+                
+                explorer_url = f"https://solscan.io/tx/{buy_result['buy_tx_signature']}"
+                if 'devnet' in RPC_URL:
+                    explorer_url += "?cluster=devnet"
+                
+                await send_dm_to_owner(
+                    f"✅ **Purchase Successful!**\n\n"
+                    f"{platform_emoji} Platform: `{buy_result.get('platform', 'Unknown').upper()}`\n"
+                    f"🪙 Token: `{buy_result['token_mint_address']}`\n"
+                    f"💰 Amount: `{buy_result['amount_bought_token']:.6f} tokens`\n"
+                    f"💎 Price: `{buy_result['buy_price_sol']:.8f} SOL`\n"
+                    f"🔗 [View Transaction]({explorer_url})\n"
+                    f"📊 Active Trades: `{get_total_active_trades_count(db)}/{MAX_PURCHASES_ALLOWED}`"
+                )
+                logger.info(f"✅ Successfully bought {ca} from {buy_result.get('platform', 'unknown')}. Added to DB.")
+            else:
+                await send_dm_to_owner(
+                    f"❌ **Purchase Failed**\n\n"
+                    f"Token: `{ca}`\n"
+                    f"Check bot logs for details."
+                )
+                logger.error(f"❌ Failed to buy token: {ca}")
+                
+        except Exception as e:
+            logger.error(f"❌ Error in buy process: {e}", exc_info=True)
+            await send_dm_to_owner(f"🚨 **Error in Purchase Process**\n\nToken: `{ca}`\nError: `{str(e)[:200]}`")
+        finally:
+            db.close()
     else:
         logger.info(f"ℹ️ No valid Solana CA found in pinned message from '{log_group_name}'")
         await send_dm_to_owner(f"ℹ️ **No Solana CA Found**\n\nGroup: `{log_group_name}`\nNo valid contract address found in the pinned message.")
@@ -375,11 +536,16 @@ async def get_group_info(group_id):
         # Get group entity
         group_entity = await client.get_entity(actual_group_id)
         
+        # Safely get participants count
+        participants_count = getattr(group_entity, 'participants_count', None)
+        if participants_count is None:
+            participants_count = 0
+        
         group_info = {
             'id': actual_group_id,
             'title': getattr(group_entity, 'title', 'Unknown Group'),
             'username': getattr(group_entity, 'username', None),
-            'participants_count': getattr(group_entity, 'participants_count', 0)
+            'participants_count': participants_count
         }
         
         return group_info
@@ -437,12 +603,16 @@ async def main():
         logger.info("🎯 Bot is running and monitoring...")
         logger.info(f"📺 Monitoring group: {group_info['title']} (ID: {group_info['id']})")
         
-        # Show additional group info if available
-        if group_info['username']:
+        # Show additional group info if available - with safe checking
+        if group_info.get('username'):
             logger.info(f"🔗 Group username: @{group_info['username']}")
         
-        if group_info['participants_count'] > 0:
-            logger.info(f"👥 Participants: {group_info['participants_count']}")
+        # Safe participants count check
+        participants_count = group_info.get('participants_count', 0)
+        if participants_count and participants_count > 0:
+            logger.info(f"👥 Participants: {participants_count}")
+        else:
+            logger.info("👥 Participants: Unknown/Private")
         
         # Send startup notification to owner
         startup_message = (
@@ -456,8 +626,12 @@ async def main():
             f"🛑 Stop Loss: `{STOP_LOSS_PERCENT*100:.1f}%`"
         )
         
-        if group_info['username']:
+        # Add optional info to startup message
+        if group_info.get('username'):
             startup_message += f"\n🔗 Group: @{group_info['username']}"
+        
+        if participants_count and participants_count > 0:
+            startup_message += f"\n👥 Members: {participants_count}"
             
         await send_dm_to_owner(startup_message)
         
@@ -472,7 +646,14 @@ async def main():
         
     except Exception as e:
         logger.error(f"❌ Fatal error: {e}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
         raise
+
+# ... keep all other code the same ...
+
+if __name__ == "__main__":
+    asyncio.run(main())
 
 # ... keep all other code the same ...
 
