@@ -247,3 +247,4 @@ if __name__ == "__main__":
     elif choice == "6":
         debug_keypair_structure()
     else:
+        print("❌ Invalid choice!")
