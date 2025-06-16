@@ -9,11 +9,13 @@ from telethon.tl.functions.messages import GetFullChatRequest
 from dotenv import load_dotenv
 from loguru import logger
 import aiohttp
+from solana_service import solana_service, init_solana_config_from_env, get_token_price_sol
+from trading_service import MultiPlatformTradingService, extract_solana_ca_enhanced
+
 
 # Local imports
 from db_manager import init_db, get_db, add_trade, get_active_trades, update_trade_status, get_total_active_trades_count, Trade
-import solana_service
-from trading_service import MultiPlatformTradingService, extract_solana_ca_enhanced
+
 from solders.pubkey import Pubkey as PublicKey
 
 # --- Logging Configuration ---
@@ -249,8 +251,10 @@ async def dm_heartbeat():
 
 # ... keep all other background task functions (monitor_trades_and_sell, background_tasks) ...
 
+# Replace the monitor_trades_and_sell function in main.py
+
 async def monitor_trades_and_sell():
-    """Monitor active trades and execute sell logic"""
+    """Monitor active trades and execute sell logic with better error handling"""
     db = next(get_db())
     try:
         active_trades = get_active_trades(db)
@@ -269,9 +273,24 @@ async def monitor_trades_and_sell():
 
             logger.debug(f"🔍 Checking trade: {token_mint_address} ({platform})")
 
-            # Get current price
+            # Validate token address before processing
             try:
-                current_token_price_sol = await solana_service.get_token_price_sol(PublicKey(token_mint_address))
+                # Validate the token mint address format
+                from trading_service import MultiPlatformTradingService
+                temp_service = MultiPlatformTradingService(None)
+                if not temp_service.is_valid_solana_address(token_mint_address):
+                    logger.error(f"❌ Invalid token address in database: {token_mint_address}")
+                    # Mark trade as error and skip
+                    update_trade_status(db, trade.id, "error", 0, "invalid_address")
+                    continue
+                    
+            except Exception as e:
+                logger.error(f"❌ Error validating token address {token_mint_address}: {e}")
+                continue
+
+            # Get current price with proper error handling
+            try:
+                current_token_price_sol = await solana_service.get_token_price_sol(token_mint_address)
                 if current_token_price_sol is None:
                     logger.warning(f"⚠️ Could not fetch current price for {token_mint_address}. Skipping.")
                     continue
@@ -286,7 +305,7 @@ async def monitor_trades_and_sell():
                 
             profit_loss_percent = (current_token_price_sol - buy_price_sol) / buy_price_sol
 
-            logger.info(f"📈 {platform.upper()} {token_mint_address}: Buy={buy_price_sol:.8f} SOL, Current={current_token_price_sol:.8f} SOL, P/L={profit_loss_percent*100:.2f}%")
+            logger.info(f"📈 {platform.upper()} {token_mint_address[:16]}...: Buy={buy_price_sol:.8f} SOL, Current={current_token_price_sol:.8f} SOL, P/L={profit_loss_percent*100:.2f}%")
 
             should_sell = False
             sell_reason = ""
@@ -325,7 +344,7 @@ async def monitor_trades_and_sell():
                 await send_dm_to_owner(
                     f"🚨 **Initiating Sell**\n\n"
                     f"{platform_emoji} Platform: `{platform.upper()}`\n"
-                    f"🪙 Token: `{token_mint_address}`\n"
+                    f"🪙 Token: `{token_mint_address[:16]}...`\n"
                     f"📊 Reason: `{sell_reason}`\n"
                     f"📈 P/L: `{profit_loss_percent*100:.2f}%`"
                 )
@@ -363,7 +382,7 @@ async def monitor_trades_and_sell():
                         await send_dm_to_owner(
                             f"✅ **Sell Successful!**\n\n"
                             f"{platform_emoji} Platform: `{platform.upper()}`\n"
-                            f"🪙 Token: `{token_mint_address}`\n"
+                            f"🪙 Token: `{token_mint_address[:16]}...`\n"
                             f"📊 Reason: `{sell_reason}`\n"
                             f"💰 Sell Price: `{sell_result['sell_price_sol']:.8f} SOL`\n"
                             f"📈 Final P/L: `{final_profit_percent:.2f}%`\n"
@@ -376,14 +395,14 @@ async def monitor_trades_and_sell():
                         await send_dm_to_owner(
                             f"❌ **Sell Failed**\n\n"
                             f"{platform_emoji} Platform: `{platform.upper()}`\n"
-                            f"🪙 Token: `{token_mint_address}`\n"
+                            f"🪙 Token: `{token_mint_address[:16]}...`\n"
                             f"Check bot logs for details."
                         )
                         logger.error(f"❌ Failed to sell token: {token_mint_address}")
                         
                 except Exception as e:
                     logger.error(f"❌ Error selling {token_mint_address}: {e}", exc_info=True)
-                    await send_dm_to_owner(f"🚨 **Sell Error**\n\nToken: `{token_mint_address}`\nError: `{str(e)[:200]}`")
+                    await send_dm_to_owner(f"🚨 **Sell Error**\n\nToken: `{token_mint_address[:16]}...`\nError: `{str(e)[:200]}`")
 
     except Exception as e:
         logger.error(f"❌ Error in monitor_trades_and_sell: {e}", exc_info=True)
