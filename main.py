@@ -416,6 +416,155 @@ async def background_tasks():
         periodic_heartbeat()
     )
 
+@client.on(events.NewMessage)
+async def new_message_handler(event):
+    """Handle new messages in monitored channels (not groups)"""
+    
+    # Only process if it has chat_id
+    if not hasattr(event, 'chat_id'):
+        return
+    
+    # Get basic info for logging
+    log_chat_id = event.chat_id
+    log_source_name = "Unknown Channel"
+    log_source_type = "Unknown"
+    is_monitored_channel = False
+    
+    try:
+        chat_entity = await event.get_chat()
+        if chat_entity and hasattr(chat_entity, 'title'):
+            log_source_name = chat_entity.title
+            
+            # Only process CHANNELS (not groups) for new messages
+            if hasattr(chat_entity, 'broadcast') and chat_entity.broadcast:
+                log_source_type = "Channel"
+                # Check if it's in our monitored channels
+                actual_chat_id = -abs(event.chat_id) if event.chat_id > 0 else event.chat_id
+                if actual_chat_id in MONITOR_CHANNELS:
+                    is_monitored_channel = True
+    except Exception as e:
+        logger.debug(f"Error getting chat info: {e}")
+        return
+
+    # Skip if not a monitored channel
+    if not is_monitored_channel:
+        return
+
+    # Skip if message is too old (more than 2 minutes to avoid processing old messages)
+    if hasattr(event.message, 'date'):
+        from datetime import datetime, timezone
+        message_age = (datetime.now(timezone.utc) - event.message.date).total_seconds()
+        if message_age > 120:  # 2 minutes
+            logger.debug(f"⏭️ Skipping old message from {log_source_name} (age: {message_age:.0f}s)")
+            return
+
+    # Get message text
+    message_text = None
+    if hasattr(event.message, 'message') and event.message.message:
+        message_text = event.message.message
+    elif hasattr(event.message, 'text') and event.message.text:
+        message_text = event.message.text
+    
+    if not message_text:
+        logger.debug(f"⏭️ No text content in message from {log_source_name}")
+        return
+
+    logger.info(f"📢 New message from channel '{log_source_name}': {message_text[:100]}...")
+    
+    # Send notification to owner
+    await send_dm_to_owner(f"📢 **New Channel Message**\n\n📢 Channel: `{log_source_name}`\nContent: `{message_text[:200]}...`")
+
+    # Extract Solana CA using enhanced detection
+    ca = extract_solana_ca_enhanced(message_text)
+    if ca:
+        logger.info(f"🪙 Detected potential Solana CA from channel '{log_source_name}': {ca}")
+        await send_dm_to_owner(f"🔍 **Solana CA Detected**\n\n📢 Channel: `{log_source_name}`\nToken: `{ca}`\nProcessing purchase...")
+
+        db = next(get_db())
+        try:
+            # Check purchase limits
+            active_trades_count = get_total_active_trades_count(db)
+            if active_trades_count >= MAX_PURCHASES_ALLOWED:
+                await send_dm_to_owner(
+                    f"⛔ **Purchase Limit Reached**\n\n"
+                    f"Active trades: {active_trades_count}/{MAX_PURCHASES_ALLOWED}\n"
+                    f"Cannot buy more until existing positions are sold."
+                )
+                logger.warning("Purchase limit reached. Skipping purchase.")
+                return
+
+            # Check if token already exists
+            existing_trade = db.query(Trade).filter(Trade.token_mint_address == ca).first()
+            if existing_trade and existing_trade.status == "active":
+                await send_dm_to_owner(
+                    f"⚠️ **Token Already Active**\n\n"
+                    f"Token: `{ca}`\n"
+                    f"Platform: `{existing_trade.platform or 'Unknown'}`\n"
+                    f"Status: `{existing_trade.status}`"
+                )
+                logger.warning(f"Token {ca} is already an active trade. Skipping purchase.")
+                return
+
+            # --- Initiate Multi-Platform Buy Logic ---
+            logger.info(f"🚀 Attempting to buy token from channel: {ca}")
+            await send_dm_to_owner(f"🔄 **Starting Purchase**\n\nToken: `{ca}`\nAmount: `{AMOUNT_TO_BUY_SOL} SOL`\nSource: 📢 `{log_source_name}`")
+            
+            buy_result = await multi_platform_service.buy_token_multi_platform(ca, message_text)
+
+            if buy_result:
+                # Add trade to database with platform info
+                add_trade(
+                    db,
+                    token_mint_address=buy_result['token_mint_address'],
+                    buy_price_sol=buy_result['buy_price_sol'],
+                    amount_bought_token=buy_result['amount_bought_token'],
+                    wallet_token_account=buy_result['wallet_token_account'],
+                    buy_tx_signature=buy_result['buy_tx_signature'],
+                    platform=buy_result.get('platform', 'unknown'),
+                    bonding_curve_complete=buy_result.get('bonding_curve_complete')
+                )
+                
+                # Send success notification
+                platform_emoji = {
+                    'pumpfun': '🚀',
+                    'moonshot': '🌙', 
+                    'raydium': '⚡',
+                    'jupiter': '🪐',
+                    'generic': '🔄'
+                }.get(buy_result.get('platform', 'generic'), '🔄')
+                
+                explorer_url = f"https://solscan.io/tx/{buy_result['buy_tx_signature']}"
+                if 'devnet' in RPC_URL:
+                    explorer_url += "?cluster=devnet"
+                
+                await send_dm_to_owner(
+                    f"✅ **Purchase Successful!**\n\n"
+                    f"{platform_emoji} Platform: `{buy_result.get('platform', 'Unknown').upper()}`\n"
+                    f"🪙 Token: `{buy_result['token_mint_address']}`\n"
+                    f"💰 Amount: `{buy_result['amount_bought_token']:.6f} tokens`\n"
+                    f"💎 Price: `{buy_result['buy_price_sol']:.8f} SOL`\n"
+                    f"📍 Source: 📢 `{log_source_name}`\n"
+                    f"🔗 [View Transaction]({explorer_url})\n"
+                    f"📊 Active Trades: `{get_total_active_trades_count(db)}/{MAX_PURCHASES_ALLOWED}`"
+                )
+                logger.info(f"✅ Successfully bought {ca} from {buy_result.get('platform', 'unknown')}. Source: {log_source_name}")
+            else:
+                await send_dm_to_owner(
+                    f"❌ **Purchase Failed**\n\n"
+                    f"Token: `{ca}`\n"
+                    f"Source: 📢 `{log_source_name}`\n"
+                    f"Check bot logs for details."
+                )
+                logger.error(f"❌ Failed to buy token: {ca}")
+                
+        except Exception as e:
+            logger.error(f"❌ Error in buy process: {e}", exc_info=True)
+            await send_dm_to_owner(f"🚨 **Error in Purchase Process**\n\nToken: `{ca}`\nSource: 📢 `{log_source_name}`\nError: `{str(e)[:200]}`")
+        finally:
+            db.close()
+    else:
+        logger.debug(f"ℹ️ No valid Solana CA found in channel message from '{log_source_name}'")
+
 # --- Enhanced Telegram Event Handler for Multiple Sources ---
 @client.on(events.ChatAction)
 async def pinned_message_handler(event):
