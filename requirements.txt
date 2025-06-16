@@ -1,7 +1,13 @@
-telethon
-python-dotenv
-solana
-aiohttp
-aiocron
-sqlalchemy
-loguru
+# requirements.txt
+telethon>=1.34.0
+python-dotenv>=1.0.0
+solana>=0.34.0
+solders>=0.18.0
+aiohttp>=3.9.0
+aiocron>=1.8
+sqlalchemy>=2.0.0
+loguru>=0.7.0
+base58>=2.1.0
+spl-token>=0.2.0
+jupyter>=1.0.0
+requests>=2.31.0
