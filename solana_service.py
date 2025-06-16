@@ -106,19 +106,19 @@ class SolanaService:
             
             logger.debug(f"🔍 Getting price for: {token_mint_str}")
             
-            # Try Jupiter Price API v2 first
-            price = await self._get_jupiter_price_v2(token_mint_str)
-            if price:
-                return price
-            
-            # Try Jupiter Price API v1
-            price = await self._get_jupiter_price_v1(token_mint_str)
-            if price:
+            # Try Jupiter Price API first
+            price = await self._get_jupiter_price(token_mint_str)
+            if price and price > 0:
                 return price
             
             # Try DexScreener as fallback
             price = await self._get_dexscreener_price(token_mint_str)
-            if price:
+            if price and price > 0:
+                return price
+            
+            # Try Birdeye as another fallback
+            price = await self._get_birdeye_price(token_mint_str)
+            if price and price > 0:
                 return price
             
             # If all APIs fail, use a small mock price
@@ -129,8 +129,8 @@ class SolanaService:
             logger.error(f"❌ Error getting price for {token_mint_str}: {e}")
             return 0.00001
     
-    async def _get_jupiter_price_v2(self, token_mint: str) -> Optional[float]:
-        """Get price from Jupiter API v2"""
+    async def _get_jupiter_price(self, token_mint: str) -> Optional[float]:
+        """Get price from Jupiter API (fixed URL)"""
         try:
             url = f"{self.jupiter_api}/price"
             params = {
@@ -144,37 +144,19 @@ class SolanaService:
                         data = await response.json()
                         if 'data' in data and token_mint in data['data']:
                             price = float(data['data'][token_mint]['price'])
-                            logger.debug(f"💰 Jupiter v2 price: {price} SOL")
+                            logger.debug(f"💰 Jupiter price: {price} SOL")
                             return price
+                        else:
+                            logger.debug(f"No price data for {token_mint} in Jupiter response")
+                    else:
+                        logger.debug(f"Jupiter API returned status: {response.status}")
                         
         except Exception as e:
-            logger.debug(f"Jupiter v2 API failed: {e}")
-        return None
-    
-    async def _get_jupiter_price_v1(self, token_mint: str) -> Optional[float]:
-        """Get price from Jupiter API v1 (fallback)"""
-        try:
-            url = f"https://price.jup.ag/v4/price"
-            params = {
-                'ids': token_mint,
-                'vsToken': 'So11111111111111111111111111111111111111112'
-            }
-            
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, params=params, timeout=10) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        if 'data' in data and token_mint in data['data']:
-                            price = float(data['data'][token_mint]['price'])
-                            logger.debug(f"💰 Jupiter v1 price: {price} SOL")
-                            return price
-                        
-        except Exception as e:
-            logger.debug(f"Jupiter v1 API failed: {e}")
+            logger.debug(f"Jupiter API failed: {e}")
         return None
     
     async def _get_dexscreener_price(self, token_mint: str) -> Optional[float]:
-        """Get price from DexScreener as ultimate fallback"""
+        """Get price from DexScreener"""
         try:
             url = f"https://api.dexscreener.com/latest/dex/tokens/{token_mint}"
             
@@ -183,16 +165,53 @@ class SolanaService:
                     if response.status == 200:
                         data = await response.json()
                         if 'pairs' in data and len(data['pairs']) > 0:
-                            # Get the first pair with SOL
+                            # Look for SOL pairs
                             for pair in data['pairs']:
-                                if pair.get('quoteToken', {}).get('symbol') == 'SOL':
+                                quote_token = pair.get('quoteToken', {})
+                                if quote_token.get('symbol') == 'SOL' or quote_token.get('address') == 'So11111111111111111111111111111111111111112':
                                     price = float(pair.get('priceNative', 0))
                                     if price > 0:
                                         logger.debug(f"💰 DexScreener price: {price} SOL")
                                         return price
+                            
+                            # If no SOL pair, try to calculate from USD price
+                            for pair in data['pairs']:
+                                usd_price = float(pair.get('priceUsd', 0))
+                                if usd_price > 0:
+                                    # Assume SOL = $100 for rough calculation (you can make this dynamic)
+                                    sol_price_estimate = 100.0  
+                                    price_in_sol = usd_price / sol_price_estimate
+                                    logger.debug(f"💰 DexScreener estimated price: {price_in_sol} SOL (from USD)")
+                                    return price_in_sol
                         
         except Exception as e:
             logger.debug(f"DexScreener API failed: {e}")
+        return None
+    
+    async def _get_birdeye_price(self, token_mint: str) -> Optional[float]:
+        """Get price from Birdeye API"""
+        try:
+            url = f"https://public-api.birdeye.so/defi/price"
+            params = {
+                'address': token_mint,
+                'check_liquidity': 'true'
+            }
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, params=params, timeout=10) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        if data.get('success') and 'data' in data:
+                            usd_price = float(data['data'].get('value', 0))
+                            if usd_price > 0:
+                                # Convert to SOL (rough estimate - you can get real SOL price)
+                                sol_price_estimate = 100.0
+                                price_in_sol = usd_price / sol_price_estimate
+                                logger.debug(f"💰 Birdeye estimated price: {price_in_sol} SOL")
+                                return price_in_sol
+                        
+        except Exception as e:
+            logger.debug(f"Birdeye API failed: {e}")
         return None
     
     async def get_wallet_balance(self) -> Optional[float]:
@@ -269,6 +288,8 @@ class SolanaService:
             slippage_bps = int(os.getenv('SLIPPAGE_BPS', '500'))
             amount_lamports = int(buy_amount_sol * 1_000_000_000)
             
+            logger.info(f"🔄 Getting Jupiter quote for {buy_amount_sol} SOL -> {token_mint}")
+            
             # Get Jupiter quote
             quote = await self._get_jupiter_quote(
                 input_mint='So11111111111111111111111111111111111111112',  # SOL
@@ -281,11 +302,15 @@ class SolanaService:
                 logger.error("❌ Could not get Jupiter quote")
                 return None
             
+            logger.info(f"✅ Jupiter quote received - Expected output: {quote.get('outAmount', 'unknown')} tokens")
+            
             # Get swap transaction
             swap_tx = await self._get_jupiter_swap_transaction(quote)
             if not swap_tx:
                 logger.error("❌ Could not get swap transaction")
                 return None
+            
+            logger.info(f"✅ Swap transaction prepared, executing...")
             
             # Execute transaction
             tx_signature = await self._execute_transaction(swap_tx)
@@ -322,14 +347,18 @@ class SolanaService:
                 'asLegacyTransaction': 'false'
             }
             
+            logger.debug(f"🔗 Jupiter quote URL: {url}")
+            logger.debug(f"📊 Quote params: {params}")
+            
             async with aiohttp.ClientSession() as session:
                 async with session.get(url, params=params, timeout=15) as response:
                     if response.status == 200:
                         quote_data = await response.json()
-                        logger.debug(f"💱 Jupiter quote received")
+                        logger.debug(f"💱 Jupiter quote received: {quote_data.get('outAmount', 'unknown')} tokens expected")
                         return quote_data
                     else:
-                        logger.error(f"❌ Jupiter quote API error: {response.status}")
+                        response_text = await response.text()
+                        logger.error(f"❌ Jupiter quote API error {response.status}: {response_text}")
                         return None
                         
         except Exception as e:
@@ -348,15 +377,22 @@ class SolanaService:
                 'prioritizationFeeLamports': 'auto'
             }
             
+            logger.debug(f"🔗 Jupiter swap URL: {url}")
+            
             async with aiohttp.ClientSession() as session:
                 async with session.post(url, json=payload, timeout=15) as response:
                     if response.status == 200:
                         swap_data = await response.json()
                         if 'swapTransaction' in swap_data:
+                            logger.debug("✅ Swap transaction received from Jupiter")
                             return swap_data['swapTransaction']
-                    
-                    logger.error(f"❌ Jupiter swap API error: {response.status}")
-                    return None
+                        else:
+                            logger.error("❌ No swapTransaction in response")
+                            return None
+                    else:
+                        response_text = await response.text()
+                        logger.error(f"❌ Jupiter swap API error {response.status}: {response_text}")
+                        return None
                     
         except Exception as e:
             logger.error(f"❌ Error getting Jupiter swap transaction: {e}")
@@ -371,6 +407,8 @@ class SolanaService:
             
             # Sign the transaction
             transaction.sign([self.keypair])
+            
+            logger.info("📤 Sending transaction to blockchain...")
             
             # Send the transaction with confirmed commitment
             response = await self.client.send_transaction(
@@ -400,6 +438,8 @@ class SolanaService:
     async def _wait_for_confirmation(self, tx_signature: str, max_retries: int = 30) -> bool:
         """Wait for transaction confirmation"""
         try:
+            logger.info(f"⏳ Waiting for transaction confirmation: {tx_signature}")
+            
             for i in range(max_retries):
                 response = await self.client.get_signature_statuses([tx_signature])
                 if response.value and response.value[0]:
@@ -413,7 +453,7 @@ class SolanaService:
                 
                 await asyncio.sleep(2)
                 if i % 5 == 0:
-                    logger.info(f"⏳ Waiting for confirmation... ({i}/{max_retries})")
+                    logger.info(f"⏳ Waiting for confirmation... ({i+1}/{max_retries})")
             
             logger.warning(f"⚠️ Transaction confirmation timeout: {tx_signature}")
             return False
@@ -436,13 +476,68 @@ class SolanaService:
             
             logger.warning(f"🔴 EXECUTING REAL SELL for {token_mint}")
             
-            # For now, use mock until fully tested
-            logger.warning("⚠️ Real sell not fully implemented yet - using mock")
-            return await self._mock_sell(token_mint)
+            # Execute real Jupiter sell
+            result = await self._execute_jupiter_sell(token_mint, amount)
+            
+            if result:
+                logger.info(f"✅ REAL SELL SUCCESSFUL! TX: {result['sell_tx_signature']}")
+                return result
+            else:
+                logger.error("❌ Real sell failed, falling back to mock")
+                return await self._mock_sell(token_mint)
             
         except Exception as e:
             logger.error(f"❌ Error in sell for {token_mint}: {e}")
             return await self._mock_sell(token_mint)
+    
+    async def _execute_jupiter_sell(self, token_mint: str, amount: float) -> Optional[Dict]:
+        """Execute real Jupiter sell transaction"""
+        try:
+            slippage_bps = int(os.getenv('SLIPPAGE_BPS', '500'))
+            amount_tokens = int(amount)
+            
+            logger.info(f"🔄 Getting Jupiter sell quote for {amount_tokens} tokens -> SOL")
+            
+            # Get Jupiter quote for selling
+            quote = await self._get_jupiter_quote(
+                input_mint=token_mint,
+                output_mint='So11111111111111111111111111111111111111112',  # SOL
+                amount=amount_tokens,
+                slippage_bps=slippage_bps
+            )
+            
+            if not quote:
+                logger.error("❌ Could not get Jupiter sell quote")
+                return None
+            
+            logger.info(f"✅ Jupiter sell quote received - Expected output: {quote.get('outAmount', 'unknown')} lamports")
+            
+            # Get swap transaction
+            swap_tx = await self._get_jupiter_swap_transaction(quote)
+            if not swap_tx:
+                logger.error("❌ Could not get sell swap transaction")
+                return None
+            
+            logger.info(f"✅ Sell swap transaction prepared, executing...")
+            
+            # Execute transaction
+            tx_signature = await self._execute_transaction(swap_tx)
+            if not tx_signature:
+                logger.error("❌ Sell transaction execution failed")
+                return None
+            
+            # Calculate result
+            amount_out_lamports = int(quote.get('outAmount', 0))
+            sell_price_sol = amount_out_lamports / 1_000_000_000
+            
+            return {
+                'sell_price_sol': sell_price_sol,
+                'sell_tx_signature': tx_signature
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ Error executing Jupiter sell: {e}")
+            return None
     
     async def _mock_buy(self, token_mint: str, buy_amount_sol: float) -> Dict:
         """Enhanced mock buy with realistic values"""

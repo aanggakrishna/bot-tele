@@ -1,4 +1,4 @@
-# Create test_real_trading_safety.py
+# Create test_real_buy_comprehensive.py
 import asyncio
 import os
 from dotenv import load_dotenv
@@ -6,60 +6,107 @@ from solana_service import solana_service, init_solana_config_from_env
 
 load_dotenv()
 
-async def safety_checklist():
-    """Comprehensive safety checklist before enabling real trading"""
-    print("🚨 REAL TRADING SAFETY CHECKLIST")
+async def comprehensive_test():
+    """Comprehensive test untuk real trading"""
+    print("🚀 COMPREHENSIVE REAL TRADING TEST")
     print("=" * 60)
     
-    # Initialize service
-    init_solana_config_from_env()
+    # Initialize
+    success = init_solana_config_from_env()
+    print(f"🔧 Service initialized: {'✅' if success else '❌'}")
     
-    # Check 1: Trading flag
-    real_trading = os.getenv('ENABLE_REAL_TRADING', 'false').lower() == 'true'
-    print(f"🔴 Real trading enabled: {'YES ⚠️' if real_trading else 'NO ✅'}")
+    # Show current settings
+    print(f"🔴 Real trading enabled: {solana_service.enable_real_trading}")
+    print(f"🔑 Wallet loaded: {'✅' if solana_service.keypair else '❌'}")
+    print(f"🌐 RPC URL: {solana_service.rpc_url}")
+    print(f"💰 Buy amount: {os.getenv('AMOUNT_TO_BUY_SOL', '0.01')} SOL")
+    print(f"📊 Slippage: {int(os.getenv('SLIPPAGE_BPS', '500'))/100:.1f}%")
     
-    # Check 2: Wallet balance
+    # Test wallet balance
     if solana_service.keypair:
         balance = await solana_service.get_wallet_balance()
-        buy_amount = float(os.getenv('AMOUNT_TO_BUY_SOL', '0.01'))
-        print(f"💰 Wallet balance: {balance:.6f} SOL")
-        print(f"🛒 Buy amount: {buy_amount:.6f} SOL")
-        
-        if balance and balance >= buy_amount + 0.001:
-            print(f"✅ Sufficient balance for trading")
-        else:
-            print(f"❌ INSUFFICIENT BALANCE - Need at least {buy_amount + 0.001:.6f} SOL")
-    else:
-        print("❌ NO WALLET LOADED")
-    
-    # Check 3: Safety settings
-    stop_loss = float(os.getenv('STOP_LOSS_PERCENT', '0.20'))
-    take_profit = float(os.getenv('TAKE_PROFIT_PERCENT', '0.50'))
-    slippage = int(os.getenv('SLIPPAGE_BPS', '300'))
-    
-    print(f"🛑 Stop loss: {stop_loss*100:.1f}%")
-    print(f"🎯 Take profit: {take_profit*100:.1f}%")
-    print(f"📊 Slippage: {slippage/100:.1f}%")
-    
-    # Check 4: Network
-    print(f"🌐 RPC URL: {solana_service.rpc_url}")
-    is_mainnet = 'mainnet' in solana_service.rpc_url
-    print(f"⚠️ Network: {'MAINNET (REAL MONEY!)' if is_mainnet else 'Devnet/Testnet'}")
+        print(f"💎 Wallet balance: {balance:.6f} SOL" if balance else "❌ Could not get balance")
     
     print("\n" + "=" * 60)
-    print("⚠️ FINAL WARNING:")
-    print("- Real trading = Real money at risk!")
-    print("- Start with VERY small amounts (0.001 SOL)")
-    print("- Monitor closely for first few trades")
-    print("- Many tokens are scams/rugs - be careful!")
+    print("🧪 TESTING PRICE APIS")
     print("=" * 60)
     
-    if real_trading:
+    # Test tokens
+    test_tokens = [
+        ("BONK", "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263"),
+        ("USDC", "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"),
+        ("Test Token", "8f2zKNBNH7M4vS9cknsfgzBWZU6vKhp3TvNVJdjLpump")
+    ]
+    
+    for name, address in test_tokens:
+        print(f"\n🪙 Testing {name}: {address[:16]}...")
+        
+        # Test price
+        price = await solana_service.get_token_price_sol(address)
+        print(f"   💰 Price: {price} SOL" if price else "   ❌ No price")
+        
+        # Test Jupiter quote
+        try:
+            buy_amount_sol = 0.001  # Very small test amount
+            amount_lamports = int(buy_amount_sol * 1_000_000_000)
+            
+            quote = await solana_service._get_jupiter_quote(
+                input_mint='So11111111111111111111111111111111111111112',  # SOL
+                output_mint=address,
+                amount=amount_lamports,
+                slippage_bps=500
+            )
+            
+            if quote:
+                expected_tokens = int(quote.get('outAmount', 0))
+                print(f"   💱 Jupiter quote: {expected_tokens:,} tokens for {buy_amount_sol} SOL")
+            else:
+                print(f"   ❌ Jupiter quote failed")
+                
+        except Exception as e:
+            print(f"   ❌ Quote error: {e}")
+    
+    print("\n" + "=" * 60)
+    print("🎯 TESTING BUY FUNCTION")
+    print("=" * 60)
+    
+    # Test buy with BONK (well-known token)
+    test_token = "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263"  # BONK
+    print(f"🚀 Testing buy with BONK: {test_token}")
+    
+    try:
+        result = await solana_service.buy_token(test_token)
+        
+        if result:
+            print(f"✅ Buy test result:")
+            print(f"   🪙 Token: {result['token_mint_address'][:16]}...")
+            print(f"   💰 Price: {result['buy_price_sol']:.8f} SOL per token")
+            print(f"   📊 Amount: {result['amount_bought_token']:,.0f} tokens")
+            print(f"   📝 TX: {result['buy_tx_signature']}")
+            
+            if result['buy_tx_signature'].startswith('mock_'):
+                print(f"   🟡 This was a MOCK transaction (safe)")
+            else:
+                print(f"   🔴 This was a REAL transaction!")
+                print(f"   🔗 Solscan: https://solscan.io/tx/{result['buy_tx_signature']}")
+        else:
+            print(f"❌ Buy test failed")
+            
+    except Exception as e:
+        print(f"❌ Buy test error: {e}")
+    
+    print("\n" + "=" * 60)
+    
+    if solana_service.enable_real_trading:
         print("🔴 REAL TRADING IS ENABLED!")
+        print("⚠️  Transactions will use real SOL!")
         print("💡 To disable: Set ENABLE_REAL_TRADING=false in .env")
     else:
-        print("🟡 Real trading is DISABLED (safe mode)")
-        print("💡 To enable: Set ENABLE_REAL_TRADING=true in .env")
+        print("🟡 MOCK TRADING MODE")
+        print("✅ Safe for testing - no real money used")
+        print("💡 To enable real trading: Set ENABLE_REAL_TRADING=true in .env")
+    
+    print("=" * 60)
 
 if __name__ == "__main__":
-    asyncio.run(safety_checklist())
+    asyncio.run(comprehensive_test())
