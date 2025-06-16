@@ -9,9 +9,21 @@ from telethon.tl.functions.messages import GetFullChatRequest
 from dotenv import load_dotenv
 from loguru import logger
 import aiohttp
-from solana_service import solana_service, init_solana_config_from_env, get_token_price_sol
-from trading_service import MultiPlatformTradingService, extract_solana_ca_enhanced, is_valid_solana_address
-
+try:
+    from solana_service import (
+        solana_service, 
+        init_solana_config_from_env, 
+        get_token_price_sol,
+        is_valid_solana_address
+    )
+    from trading_service import (
+        MultiPlatformTradingService, 
+        extract_solana_ca_enhanced
+    )
+    logger.info("✅ All services imported successfully")
+except ImportError as e:
+    logger.error(f"❌ Failed to import services: {e}")
+    exit(1)
 
 # Local imports
 from db_manager import init_db, get_db, add_trade, get_active_trades, update_trade_status, get_total_active_trades_count, Trade
@@ -82,10 +94,13 @@ JUPITER_API_URL = os.getenv('JUPITER_API_URL', 'https://quote-api.jup.ag/v6')
 
 # --- Initialize Services ---
 logger.info("Initializing Solana service...")
-init_solana_config_from_env()
+iinit_success = init_solana_config_from_env()
+if not init_success:
+    logger.warning("⚠️ Solana service initialization had issues, continuing in monitoring mode")
 
 logger.info("Initializing multi-platform trading service...")
 multi_platform_service = MultiPlatformTradingService(solana_service)
+
 
 # Initialize Telegram Client
 client = TelegramClient('solana_bot_multi', API_ID, API_HASH)
@@ -186,20 +201,25 @@ async def test_jupiter_api():
 async def debug_solana_service():
     """Debug function to test solana service"""
     try:
-        # Test with a known valid token address (not WSOL)
+        # Test with a known valid token address
         test_address = "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263"  # BONK token
         
         logger.info(f"Testing solana service with token address: {test_address}")
         
+        # Test address validation
+        if not is_valid_solana_address(test_address):
+            logger.error(f"❌ Test address validation failed: {test_address}")
+            return False
+        
         # Skip the price test if wallet is not initialized
-        if not solana_service.keypair:  # Fix: remove .solana_service_instance
+        if not solana_service.keypair:
             logger.info("⚠️ Wallet not initialized - skipping price test")
             logger.info("✅ Solana service initialized in monitoring mode")
             return True
         
         # Test price fetch only if wallet is available
         try:
-            price = await get_token_price_sol(test_address)  # Use wrapper function
+            price = await get_token_price_sol(test_address)
             if price:
                 logger.info(f"✅ Price fetch successful: {price} SOL per token")
             else:

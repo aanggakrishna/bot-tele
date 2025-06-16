@@ -158,19 +158,34 @@ class SolanaService:
 # Global instance
 solana_service = SolanaService()
 
-# Initialize on import
+# Initialize function - this is what main.py calls
 def init_solana_config_from_env():
-    solana_service.init_from_env()
+    """Initialize global Solana service from environment"""
+    try:
+        solana_service.init_from_env()
+        logger.info("✅ Solana service initialized successfully")
+        return True
+    except Exception as e:
+        logger.error(f"❌ Failed to initialize Solana service: {e}")
+        return False
 
 # Wrapper functions for compatibility
 async def get_token_price_sol(token_mint):
+    """Wrapper function to get token price"""
     if isinstance(token_mint, str):
         return await solana_service.get_token_price_sol(token_mint)
     else:
         return await solana_service.get_token_price_sol(str(token_mint))
 
 async def buy_token_solana(token_mint_address: str):
+    """Wrapper function to buy token"""
     return await solana_service.buy_token(token_mint_address)
 
 async def sell_token_solana(token_mint_address: str, amount: float, wallet_token_account: str):
+    """Wrapper function to sell token"""
     return await solana_service.sell_token(token_mint_address, amount, wallet_token_account)
+
+# Validation function for external use
+def is_valid_solana_address(address: str) -> bool:
+    """Standalone function to validate Solana address"""
+    return solana_service._is_valid_address(address)
