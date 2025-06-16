@@ -28,7 +28,45 @@ load_dotenv()
 API_ID = int(os.getenv('API_ID'))
 API_HASH = os.getenv('API_HASH')
 OWNER_ID = int(os.getenv('OWNER_ID'))
-GROUP_ID = int(os.getenv('GROUP_ID'))
+
+# --- Multiple Sources Support ---
+def parse_sources(env_var):
+    """Parse comma-separated sources from environment variable"""
+    sources_str = os.getenv(env_var, '')
+    if not sources_str:
+        return []
+    
+    sources = []
+    for source in sources_str.split(','):
+        source = source.strip()
+        if source:
+            try:
+                # Convert to int (can be positive or negative)
+                source_id = int(source)
+                sources.append(source_id)
+            except ValueError:
+                logger.warning(f"⚠️ Invalid source ID: {source}")
+    
+    return sources
+
+# Support for multiple groups and channels
+MONITOR_GROUPS = parse_sources('MONITOR_GROUPS')  # Comma-separated group IDs
+MONITOR_CHANNELS = parse_sources('MONITOR_CHANNELS')  # Comma-separated channel IDs
+
+# Legacy support - if old GROUP_ID exists, add it to groups
+if os.getenv('GROUP_ID'):
+    legacy_group_id = int(os.getenv('GROUP_ID'))
+    if legacy_group_id not in MONITOR_GROUPS:
+        MONITOR_GROUPS.append(legacy_group_id)
+
+# Combine all sources
+ALL_MONITOR_SOURCES = MONITOR_GROUPS + MONITOR_CHANNELS
+
+if not ALL_MONITOR_SOURCES:
+    logger.error("❌ No monitoring sources configured! Please set MONITOR_GROUPS and/or MONITOR_CHANNELS in .env")
+    exit(1)
+
+logger.info(f"📺 Configured to monitor {len(MONITOR_GROUPS)} group(s) and {len(MONITOR_CHANNELS)} channel(s)")
 
 # --- Solana Configuration ---
 RPC_URL = os.getenv('RPC_URL', 'https://api.mainnet-beta.solana.com')
@@ -48,40 +86,61 @@ logger.info("Initializing multi-platform trading service...")
 multi_platform_service = MultiPlatformTradingService(solana_service)
 
 # Initialize Telegram Client
-client = TelegramClient('solana_bot', API_ID, API_HASH)
+client = TelegramClient('solana_bot_multi', API_ID, API_HASH)
 
 # --- Helper Functions ---
-async def get_group_info(group_id):
-    """Get group information including name"""
+async def get_source_info(source_id):
+    """Get source information (group or channel)"""
     try:
-        # Convert to absolute value if negative
-        actual_group_id = -abs(group_id) if group_id > 0 else group_id
+        # Convert to absolute value if needed
+        actual_source_id = -abs(source_id) if source_id > 0 else source_id
         
-        # Get group entity
-        group_entity = await client.get_entity(actual_group_id)
+        # Get entity
+        source_entity = await client.get_entity(actual_source_id)
+        
+        # Determine source type
+        source_type = "Unknown"
+        if hasattr(source_entity, 'megagroup') and source_entity.megagroup:
+            source_type = "Supergroup"
+        elif hasattr(source_entity, 'broadcast') and source_entity.broadcast:
+            source_type = "Channel"
+        elif hasattr(source_entity, 'chat'):
+            source_type = "Group"
         
         # Safely get participants count
-        participants_count = getattr(group_entity, 'participants_count', None)
+        participants_count = getattr(source_entity, 'participants_count', None)
         if participants_count is None:
             participants_count = 0
         
-        group_info = {
-            'id': actual_group_id,
-            'title': getattr(group_entity, 'title', 'Unknown Group'),
-            'username': getattr(group_entity, 'username', None),
-            'participants_count': participants_count
+        source_info = {
+            'id': actual_source_id,
+            'title': getattr(source_entity, 'title', 'Unknown'),
+            'username': getattr(source_entity, 'username', None),
+            'participants_count': participants_count,
+            'type': source_type
         }
         
-        return group_info
+        return source_info
         
     except Exception as e:
-        logger.error(f"❌ Error getting group info for {group_id}: {e}")
+        logger.error(f"❌ Error getting source info for {source_id}: {e}")
         return {
-            'id': group_id,
-            'title': 'Unknown Group',
+            'id': source_id,
+            'title': 'Unknown',
             'username': None,
-            'participants_count': 0
+            'participants_count': 0,
+            'type': 'Error'
         }
+
+async def get_all_sources_info():
+    """Get information for all monitored sources"""
+    all_sources_info = []
+    
+    for source_id in ALL_MONITOR_SOURCES:
+        source_info = await get_source_info(source_id)
+        all_sources_info.append(source_info)
+        
+    return all_sources_info
 
 async def send_dm_to_owner(message):
     """Send direct message to bot owner"""
@@ -90,6 +149,8 @@ async def send_dm_to_owner(message):
         logger.info(f"📱 Sent DM to owner: {message[:100]}...")
     except Exception as e:
         logger.error(f"❌ Error sending DM to owner: {e}")
+
+# ... keep all other helper functions (test_jupiter_api, debug_solana_service) ...
 
 async def test_jupiter_api():
     """Test Jupiter API connectivity"""
@@ -151,40 +212,42 @@ async def debug_solana_service():
         logger.error(f"Debug test failed: {e}")
         return False
 
-# --- Background Task Functions (without decorators) ---
+# --- Background Task Functions ---
 async def dm_heartbeat():
     """Send heartbeat DM to owner"""
     db = next(get_db())
     try:
         active_count = get_total_active_trades_count(db)
         
-        # Get fresh group info for heartbeat with safe checking
-        group_info = await get_group_info(GROUP_ID)
+        # Get fresh sources info for heartbeat
+        sources_info = await get_all_sources_info()
         
         heartbeat_message = (
             f"💓 **Bot Heartbeat**\n\n"
             f"Status: `Online`\n"
-            f"📺 Monitoring: `{group_info['title']}`\n"
-            f"🆔 Group ID: `{group_info['id']}`\n"
             f"📊 Active trades: `{active_count}/{MAX_PURCHASES_ALLOWED}`\n"
-            f"⏰ Time: `{datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC`"
+            f"⏰ Time: `{datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC`\n\n"
+            f"📺 **Monitoring Sources:**\n"
         )
         
-        # Add optional info if available
-        if group_info.get('username'):
-            heartbeat_message += f"\n🔗 @{group_info['username']}"
-        
-        participants_count = group_info.get('participants_count', 0)
-        if participants_count and participants_count > 0:
-            heartbeat_message += f"\n👥 {participants_count} members"
+        for source_info in sources_info:
+            source_emoji = {
+                'Channel': '📢',
+                'Supergroup': '👥',
+                'Group': '👥',
+                'Unknown': '❓'
+            }.get(source_info['type'], '📺')
+            
+            heartbeat_message += f"{source_emoji} `{source_info['title']}` ({source_info['type']})\n"
         
         await send_dm_to_owner(heartbeat_message)
-        logger.info(f"📱 Sent DM Heartbeat for group: {group_info['title']}")
+        logger.info(f"📱 Sent DM Heartbeat for {len(sources_info)} sources")
     except Exception as e:
         logger.error(f"❌ Error in DM heartbeat: {e}")
     finally:
         db.close()
 
+# ... keep all other background task functions (monitor_trades_and_sell, background_tasks) ...
 
 async def monitor_trades_and_sell():
     """Monitor active trades and execute sell logic"""
@@ -327,7 +390,6 @@ async def monitor_trades_and_sell():
     finally:
         db.close()
 
-# --- Background Tasks Runner ---
 async def background_tasks():
     """Run background tasks manually with asyncio"""
     async def periodic_monitoring():
@@ -354,48 +416,58 @@ async def background_tasks():
         periodic_heartbeat()
     )
 
-# --- Telegram Event Handler ---
+# --- Enhanced Telegram Event Handler for Multiple Sources ---
 @client.on(events.ChatAction)
 async def pinned_message_handler(event):
-    """Handle pinned message events in target group"""
+    """Handle pinned message events in target sources (groups and channels)"""
     
     # Event logging variables
     is_target_pin_event = False
     log_chat_id = "N/A"
     log_event_description = "Unknown ChatAction"
     log_content_preview = "N/A"
-    log_group_name = "Unknown Group"
+    log_source_name = "Unknown Source"
+    log_source_type = "Unknown"
 
     if hasattr(event, 'chat_id'):
         log_chat_id = event.chat_id
         try:
             chat_entity_for_log = await event.get_chat()
             if chat_entity_for_log and hasattr(chat_entity_for_log, 'title'):
-                log_group_name = chat_entity_for_log.title
+                log_source_name = chat_entity_for_log.title
+                
+                # Determine source type
+                if hasattr(chat_entity_for_log, 'megagroup') and chat_entity_for_log.megagroup:
+                    log_source_type = "Supergroup"
+                elif hasattr(chat_entity_for_log, 'broadcast') and chat_entity_for_log.broadcast:
+                    log_source_type = "Channel"
+                else:
+                    log_source_type = "Group"
         except Exception:
             pass
 
-    # Check if this is a pin event in our target group
+    # Check if this is a pin event in any of our target sources
     if hasattr(event, 'new_pin') and event.new_pin:
         log_event_description = "Pin Action"
         if hasattr(event, 'action_message') and event.action_message and hasattr(event.action_message, 'message'):
             log_content_preview = str(event.action_message.message)[:100]
         
-        # Check if it's the target group
-        if hasattr(event, 'chat_id') and event.chat_id == -abs(GROUP_ID):
-            is_target_pin_event = True
+        # Check if it's any of our monitored sources
+        if hasattr(event, 'chat_id'):
+            actual_chat_id = -abs(event.chat_id) if event.chat_id > 0 else event.chat_id
+            if actual_chat_id in ALL_MONITOR_SOURCES:
+                is_target_pin_event = True
 
-    # Enhanced logging with group name
-    logger.debug(f"📝 Processing event - Group: '{log_group_name}' (ID: {log_chat_id}), Event Type: {log_event_description}")
+    # Enhanced logging with source info
+    logger.debug(f"📝 Processing event - {log_source_type}: '{log_source_name}' (ID: {log_chat_id}), Event Type: {log_event_description}")
 
     if not is_target_pin_event:
-        logger.debug(f"⏭️ Skipping event: Not a pin action in target group '{log_group_name}' (Expected: {GROUP_ID})")
+        logger.debug(f"⏭️ Skipping event: Not a pin action in monitored sources")
         return
 
-    logger.info(f"📌 Pin event detected in target group '{log_group_name}' (ID: {log_chat_id})")
+    logger.info(f"📌 Pin event detected in {log_source_type}: '{log_source_name}' (ID: {log_chat_id})")
 
-    # --- Get Pinned Message Content ---
-    # --- Get Pinned Message Content (Optimized Order) ---
+    # --- Get Pinned Message Content (Same logic as before but with enhanced logging) ---
     message_text = None
     
     # Method 1: Try to get from event.pinned_message
@@ -409,30 +481,30 @@ async def pinned_message_handler(event):
             message_text = actual_pinned_message_object.text
             logger.info("✅ Retrieved pinned message from event.pinned_message (text)")
     
-    # Method 2: Fallback - get recent pinned messages (PRIORITIZED - it worked!)
+    # Method 2: Fallback - get recent pinned messages (PRIORITIZED)
     if not message_text:
-        logger.info("🔍 Fetching recent messages to find pinned message...")
+        logger.info(f"🔍 Fetching recent messages from {log_source_type}: {log_source_name}...")
         
         try:
-            recent_messages = await client.get_messages(log_chat_id, limit=100)  # Increased limit
+            recent_messages = await client.get_messages(log_chat_id, limit=100)
             
             for msg in recent_messages:
                 if hasattr(msg, 'pinned') and msg.pinned:
                     if hasattr(msg, 'message') and msg.message:
                         message_text = msg.message
-                        logger.info(f"✅ Found pinned message in recent messages (message)")
+                        logger.info(f"✅ Found pinned message in recent messages from {log_source_type}")
                         break
                     elif hasattr(msg, 'text') and msg.text:
                         message_text = msg.text
-                        logger.info(f"✅ Found pinned message in recent messages (text)")
+                        logger.info(f"✅ Found pinned message in recent messages from {log_source_type}")
                         break
                         
         except Exception as e:
-            logger.error(f"❌ Error fetching recent pinned messages: {e}")
+            logger.error(f"❌ Error fetching recent pinned messages from {log_source_type}: {e}")
     
     # Method 3: Manual fetch via chat info (as backup)
     if not message_text:
-        logger.warning(f"⚠️ Trying manual fetch from chat info for {log_chat_id}")
+        logger.warning(f"⚠️ Trying manual fetch from {log_source_type} info for {log_chat_id}")
         
         try:
             chat_entity = await client.get_entity(log_chat_id)
@@ -455,29 +527,36 @@ async def pinned_message_handler(event):
                     pinned_msg = pinned_messages[0]
                     if hasattr(pinned_msg, 'message') and pinned_msg.message:
                         message_text = pinned_msg.message
-                        logger.info(f"✅ Retrieved pinned message via manual fetch")
+                        logger.info(f"✅ Retrieved pinned message via manual fetch from {log_source_type}")
                     elif hasattr(pinned_msg, 'text') and pinned_msg.text:
                         message_text = pinned_msg.text
-                        logger.info(f"✅ Retrieved pinned message via manual fetch")
+                        logger.info(f"✅ Retrieved pinned message via manual fetch from {log_source_type}")
             
         except Exception as e:
-            logger.error(f"❌ Error in manual fetch: {e}")
+            logger.error(f"❌ Error in manual fetch from {log_source_type}: {e}")
     
     # Final check
     if not message_text:
-        logger.error(f"❌ FAILED to retrieve pinned message text from group {log_group_name}")
-        await send_dm_to_owner(f"⚠️ **Pin Event Detected**\n\nGroup: `{log_group_name}`\n❌ Could not retrieve message content. Please check manually.")
+        logger.error(f"❌ FAILED to retrieve pinned message text from {log_source_type}: {log_source_name}")
+        await send_dm_to_owner(f"⚠️ **Pin Event Detected**\n\n{log_source_type}: `{log_source_name}`\n❌ Could not retrieve message content. Please check manually.")
         return
 
     # Continue with normal logic
-    logger.info(f"📄 New Pinned Message detected: {message_text[:200]}...")
-    await send_dm_to_owner(f"📌 **New Pinned Message**\n\nGroup: `{log_group_name}`\nContent: `{message_text[:200]}...`")
+    logger.info(f"📄 New Pinned Message detected from {log_source_type}: {message_text[:200]}...")
+    
+    source_emoji = {
+        'Channel': '📢',
+        'Supergroup': '👥',
+        'Group': '👥'
+    }.get(log_source_type, '📺')
+    
+    await send_dm_to_owner(f"📌 **New Pinned Message**\n\n{source_emoji} {log_source_type}: `{log_source_name}`\nContent: `{message_text[:200]}...`")
 
     # Extract Solana CA using enhanced detection
     ca = extract_solana_ca_enhanced(message_text)
     if ca:
-        logger.info(f"🪙 Detected potential Solana CA in '{log_group_name}': {ca}")
-        await send_dm_to_owner(f"🔍 **Solana CA Detected**\n\nGroup: `{log_group_name}`\nToken: `{ca}`\nProcessing purchase...")
+        logger.info(f"🪙 Detected potential Solana CA from {log_source_type} '{log_source_name}': {ca}")
+        await send_dm_to_owner(f"🔍 **Solana CA Detected**\n\n{source_emoji} {log_source_type}: `{log_source_name}`\nToken: `{ca}`\nProcessing purchase...")
 
         db = next(get_db())
         try:
@@ -506,7 +585,7 @@ async def pinned_message_handler(event):
 
             # --- Initiate Multi-Platform Buy Logic ---
             logger.info(f"🚀 Attempting to buy token: {ca}")
-            await send_dm_to_owner(f"🔄 **Starting Purchase**\n\nToken: `{ca}`\nAmount: `{AMOUNT_TO_BUY_SOL} SOL`")
+            await send_dm_to_owner(f"🔄 **Starting Purchase**\n\nToken: `{ca}`\nAmount: `{AMOUNT_TO_BUY_SOL} SOL`\nSource: {source_emoji} `{log_source_name}`")
             
             buy_result = await multi_platform_service.buy_token_multi_platform(ca, message_text)
 
@@ -542,63 +621,34 @@ async def pinned_message_handler(event):
                     f"🪙 Token: `{buy_result['token_mint_address']}`\n"
                     f"💰 Amount: `{buy_result['amount_bought_token']:.6f} tokens`\n"
                     f"💎 Price: `{buy_result['buy_price_sol']:.8f} SOL`\n"
+                    f"📍 Source: {source_emoji} `{log_source_name}`\n"
                     f"🔗 [View Transaction]({explorer_url})\n"
                     f"📊 Active Trades: `{get_total_active_trades_count(db)}/{MAX_PURCHASES_ALLOWED}`"
                 )
-                logger.info(f"✅ Successfully bought {ca} from {buy_result.get('platform', 'unknown')}. Added to DB.")
+                logger.info(f"✅ Successfully bought {ca} from {buy_result.get('platform', 'unknown')}. Source: {log_source_name}")
             else:
                 await send_dm_to_owner(
                     f"❌ **Purchase Failed**\n\n"
                     f"Token: `{ca}`\n"
+                    f"Source: {source_emoji} `{log_source_name}`\n"
                     f"Check bot logs for details."
                 )
                 logger.error(f"❌ Failed to buy token: {ca}")
                 
         except Exception as e:
             logger.error(f"❌ Error in buy process: {e}", exc_info=True)
-            await send_dm_to_owner(f"🚨 **Error in Purchase Process**\n\nToken: `{ca}`\nError: `{str(e)[:200]}`")
+            await send_dm_to_owner(f"🚨 **Error in Purchase Process**\n\nToken: `{ca}`\nSource: {source_emoji} `{log_source_name}`\nError: `{str(e)[:200]}`")
         finally:
             db.close()
     else:
-        logger.info(f"ℹ️ No valid Solana CA found in pinned message from '{log_group_name}'")
-        await send_dm_to_owner(f"ℹ️ **No Solana CA Found**\n\nGroup: `{log_group_name}`\nNo valid contract address found in the pinned message.")
-# --- Helper Functions ---
-async def get_group_info(group_id):
-    """Get group information including name"""
-    try:
-        # Convert to absolute value if negative
-        actual_group_id = -abs(group_id) if group_id > 0 else group_id
-        
-        # Get group entity
-        group_entity = await client.get_entity(actual_group_id)
-        
-        # Safely get participants count
-        participants_count = getattr(group_entity, 'participants_count', None)
-        if participants_count is None:
-            participants_count = 0
-        
-        group_info = {
-            'id': actual_group_id,
-            'title': getattr(group_entity, 'title', 'Unknown Group'),
-            'username': getattr(group_entity, 'username', None),
-            'participants_count': participants_count
-        }
-        
-        return group_info
-        
-    except Exception as e:
-        logger.error(f"❌ Error getting group info for {group_id}: {e}")
-        return {
-            'id': group_id,
-            'title': 'Unknown Group',
-            'username': None,
-            'participants_count': 0
-        }
+        logger.info(f"ℹ️ No valid Solana CA found in pinned message from {log_source_type}: '{log_source_name}'")
+        await send_dm_to_owner(f"ℹ️ **No Solana CA Found**\n\n{source_emoji} {log_source_type}: `{log_source_name}`\nNo valid contract address found in the pinned message.")
+
 # --- Main Function ---
 async def main():
     """Main function"""
     try:
-        logger.info("🚀 Starting Solana Trading Bot...")
+        logger.info("🚀 Starting Solana Multi-Source Trading Bot...")
         
         # Test Jupiter API first
         jupiter_working = await test_jupiter_api()
@@ -632,43 +682,54 @@ async def main():
         me = await client.get_me()
         logger.info(f"👤 Logged in as: {me.first_name} (@{me.username})")
         
-        # Get group information
-        logger.info("🔍 Getting group information...")
-        group_info = await get_group_info(GROUP_ID)
+        # Get all sources information
+        logger.info("🔍 Getting sources information...")
+        sources_info = await get_all_sources_info()
         
         logger.info("🎯 Bot is running and monitoring...")
-        logger.info(f"📺 Monitoring group: {group_info['title']} (ID: {group_info['id']})")
+        logger.info(f"📺 Monitoring {len(sources_info)} sources:")
         
-        # Show additional group info if available - with safe checking
-        if group_info.get('username'):
-            logger.info(f"🔗 Group username: @{group_info['username']}")
-        
-        # Safe participants count check
-        participants_count = group_info.get('participants_count', 0)
-        if participants_count and participants_count > 0:
-            logger.info(f"👥 Participants: {participants_count}")
-        else:
-            logger.info("👥 Participants: Unknown/Private")
+        for source_info in sources_info:
+            source_emoji = {
+                'Channel': '📢',
+                'Supergroup': '👥',
+                'Group': '👥',
+                'Unknown': '❓'
+            }.get(source_info['type'], '📺')
+            
+            logger.info(f"  {source_emoji} {source_info['type']}: {source_info['title']} (ID: {source_info['id']})")
+            
+            if source_info.get('username'):
+                logger.info(f"    🔗 @{source_info['username']}")
+            
+            participants_count = source_info.get('participants_count', 0)
+            if participants_count and participants_count > 0:
+                logger.info(f"    👥 {participants_count} members")
         
         # Send startup notification to owner
         startup_message = (
-            f"🚀 **Bot Started Successfully!**\n\n"
-            f"📺 Monitoring: `{group_info['title']}`\n"
-            f"🆔 Group ID: `{group_info['id']}`\n"
+            f"🚀 **Multi-Source Bot Started!**\n\n"
             f"👤 Bot Account: `{me.first_name}`\n"
             f"📊 Max Trades: `{MAX_PURCHASES_ALLOWED}`\n"
             f"💰 Buy Amount: `{AMOUNT_TO_BUY_SOL} SOL`\n"
             f"📈 Take Profit: `{TAKE_PROFIT_PERCENT*100:.1f}%`\n"
-            f"🛑 Stop Loss: `{STOP_LOSS_PERCENT*100:.1f}%`\n"
-            f"🚀 **Pump.fun Ready!**"
+            f"🛑 Stop Loss: `{STOP_LOSS_PERCENT*100:.1f}%`\n\n"
+            f"📺 **Monitoring {len(sources_info)} Sources:**\n"
         )
         
-        # Add optional info to startup message
-        if group_info.get('username'):
-            startup_message += f"\n🔗 Group: @{group_info['username']}"
+        for source_info in sources_info:
+            source_emoji = {
+                'Channel': '📢',
+                'Supergroup': '👥',
+                'Group': '👥'
+            }.get(source_info['type'], '📺')
+            
+            startup_message += f"{source_emoji} `{source_info['title']}`"
+            if source_info.get('username'):
+                startup_message += f" (@{source_info['username']})"
+            startup_message += "\n"
         
-        if participants_count and participants_count > 0:
-            startup_message += f"\n👥 Members: {participants_count}"
+        startup_message += f"\n🚀 **Pump.fun Ready!**"
             
         await send_dm_to_owner(startup_message)
         
