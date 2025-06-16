@@ -1,120 +1,65 @@
+# Create test_real_trading_safety.py
 import asyncio
-import sys
 import os
+from dotenv import load_dotenv
+from solana_service import solana_service, init_solana_config_from_env
 
-# Add current directory to path for imports
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+load_dotenv()
 
-from trading_service import extract_solana_ca_enhanced
-from solana_service import (
-    solana_service, 
-    init_solana_config_from_env, 
-    get_token_price_sol,
-    is_valid_solana_address
-)
-
-async def test_fixes():
-    print("🧪 Testing Fixed Functions")
-    print("=" * 50)
+async def safety_checklist():
+    """Comprehensive safety checklist before enabling real trading"""
+    print("🚨 REAL TRADING SAFETY CHECKLIST")
+    print("=" * 60)
     
-    # Test address validation
-    test_addresses = [
-        "8f2zKNBNH7M4vS9cknsfgzBWZU6vKhp3TvNVJdjLpump",
-        "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263",
-        "invalid_address"
-    ]
+    # Initialize service
+    init_solana_config_from_env()
     
-    print("📍 Testing Address Validation:")
-    for addr in test_addresses:
-        is_valid = is_valid_solana_address(addr)
-        print(f"   {addr[:20]}... - Valid: {'✅' if is_valid else '❌'}")
+    # Check 1: Trading flag
+    real_trading = os.getenv('ENABLE_REAL_TRADING', 'false').lower() == 'true'
+    print(f"🔴 Real trading enabled: {'YES ⚠️' if real_trading else 'NO ✅'}")
     
-    print("\n🔍 Testing CA Extraction:")
-    test_message = "Check this token: 8f2zKNBNH7M4vS9cknsfgzBWZU6vKhp3TvNVJdjLpump from pump.fun"
-    extracted = extract_solana_ca_enhanced(test_message)
-    print(f"   Message: {test_message[:50]}...")
-    print(f"   Extracted CA: {extracted}")
-    
-    print("\n🔧 Testing Solana Service Initialization:")
-    init_success = init_solana_config_from_env()
-    print(f"   Initialization successful: {'✅' if init_success else '❌'}")
-    print(f"   Wallet loaded: {'✅' if solana_service.keypair else '❌ (Monitoring mode only)'}")
-    print(f"   RPC URL: {solana_service.rpc_url}")
-    
-    print("\n💰 Testing Price Function:")
-    if extracted:
-        try:
-            price = await get_token_price_sol(extracted)
-            print(f"   Price for {extracted[:16]}...: {price} SOL")
-        except Exception as e:
-            print(f"   Price test failed: {e}")
+    # Check 2: Wallet balance
+    if solana_service.keypair:
+        balance = await solana_service.get_wallet_balance()
+        buy_amount = float(os.getenv('AMOUNT_TO_BUY_SOL', '0.01'))
+        print(f"💰 Wallet balance: {balance:.6f} SOL")
+        print(f"🛒 Buy amount: {buy_amount:.6f} SOL")
+        
+        if balance and balance >= buy_amount + 0.001:
+            print(f"✅ Sufficient balance for trading")
+        else:
+            print(f"❌ INSUFFICIENT BALANCE - Need at least {buy_amount + 0.001:.6f} SOL")
     else:
-        print("   No valid CA to test price with")
+        print("❌ NO WALLET LOADED")
     
-    print("\n🚀 Testing Buy Function (Mock):")
-    if extracted:
-        try:
-            buy_result = await solana_service.buy_token(extracted)
-            if buy_result:
-                print(f"   Mock buy successful:")
-                print(f"     Token: {buy_result['token_mint_address'][:16]}...")
-                print(f"     Price: {buy_result['buy_price_sol']} SOL")
-                print(f"     Amount: {buy_result['amount_bought_token']:,.0f} tokens")
-                print(f"     TX: {buy_result['buy_tx_signature']}")
-            else:
-                print("   Mock buy failed")
-        except Exception as e:
-            print(f"   Buy test failed: {e}")
+    # Check 3: Safety settings
+    stop_loss = float(os.getenv('STOP_LOSS_PERCENT', '0.20'))
+    take_profit = float(os.getenv('TAKE_PROFIT_PERCENT', '0.50'))
+    slippage = int(os.getenv('SLIPPAGE_BPS', '300'))
     
-    print("\n✅ All tests completed!")
-
-async def test_real_addresses():
-    """Test with known real Solana addresses"""
-    print("\n🎯 Testing with Real Token Addresses:")
-    print("=" * 50)
+    print(f"🛑 Stop loss: {stop_loss*100:.1f}%")
+    print(f"🎯 Take profit: {take_profit*100:.1f}%")
+    print(f"📊 Slippage: {slippage/100:.1f}%")
     
-    real_tokens = [
-        ("BONK", "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263"),
-        ("USDC", "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"),
-        ("SOL", "So11111111111111111111111111111111111111112"),
-        ("Your Token", "8f2zKNBNH7M4vS9cknsfgzBWZU6vKhp3TvNVJdjLpump")
-    ]
+    # Check 4: Network
+    print(f"🌐 RPC URL: {solana_service.rpc_url}")
+    is_mainnet = 'mainnet' in solana_service.rpc_url
+    print(f"⚠️ Network: {'MAINNET (REAL MONEY!)' if is_mainnet else 'Devnet/Testnet'}")
     
-    for name, address in real_tokens:
-        is_valid = is_valid_solana_address(address)
-        print(f"📍 {name:<10} {address[:16]}... - Valid: {'✅' if is_valid else '❌'}")
-        
-        if is_valid:
-            try:
-                price = await get_token_price_sol(address)
-                print(f"   💰 Mock price: {price} SOL")
-            except Exception as e:
-                print(f"   💰 Price error: {e}")
-
-def main():
-    """Main test function"""
-    try:
-        print("🚀 Starting Comprehensive Solana Service Tests")
-        print("=" * 60)
-        
-        # Run basic tests
-        asyncio.run(test_fixes())
-        
-        # Run real address tests
-        asyncio.run(test_real_addresses())
-        
-        print("\n" + "=" * 60)
-        print("🎉 All tests completed successfully!")
-        
-    except KeyboardInterrupt:
-        print("\n👋 Tests interrupted by user")
-    except ImportError as e:
-        print(f"❌ Import error: {e}")
-        print("💡 Make sure all files are in the same directory and properly configured")
-    except Exception as e:
-        print(f"❌ Test failed: {e}")
-        import traceback
-        traceback.print_exc()
+    print("\n" + "=" * 60)
+    print("⚠️ FINAL WARNING:")
+    print("- Real trading = Real money at risk!")
+    print("- Start with VERY small amounts (0.001 SOL)")
+    print("- Monitor closely for first few trades")
+    print("- Many tokens are scams/rugs - be careful!")
+    print("=" * 60)
+    
+    if real_trading:
+        print("🔴 REAL TRADING IS ENABLED!")
+        print("💡 To disable: Set ENABLE_REAL_TRADING=false in .env")
+    else:
+        print("🟡 Real trading is DISABLED (safe mode)")
+        print("💡 To enable: Set ENABLE_REAL_TRADING=true in .env")
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(safety_checklist())
