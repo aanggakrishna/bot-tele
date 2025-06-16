@@ -845,22 +845,32 @@ async def main():
         init_db()
         logger.info("✅ Database initialized")
         
-        # Initialize Solana service
+        # Initialize Solana service - FIXED VERSION
+        logger.info("🔧 Initializing Solana service...")
         try:
-            solana_service.init_solana_config_from_env()
-            logger.info("✅ Solana service initialized")
+            # Call the module-level function, not a method on solana_service object
+            init_success = init_solana_config_from_env()
+            if init_success:
+                logger.info("✅ Solana service initialized successfully")
+            else:
+                logger.warning("⚠️ Solana service initialization returned False but continuing...")
         except Exception as e:
-            logger.warning(f"⚠️ Solana service initialization had issues: {e}")
-            logger.info("🔄 Continuing in monitoring mode...")
+            logger.error(f"❌ Solana service initialization failed: {e}")
+            logger.info("🔄 Continuing in monitoring mode only...")
         
         # Test Solana service
         logger.info("🧪 Testing Solana service...")
-        solana_test_success = await debug_solana_service()
-        
-        if not solana_test_success:
-            logger.warning("⚠️ Solana service test failed")
+        try:
+            solana_test_success = await debug_solana_service()
+            if solana_test_success:
+                logger.info("✅ Solana service test passed")
+            else:
+                logger.warning("⚠️ Solana service test failed but continuing...")
+        except Exception as e:
+            logger.error(f"❌ Solana service test error: {e}")
         
         # Start the client
+        logger.info("📡 Starting Telegram client...")
         await client.start()
         logger.info("✅ Telegram client started")
         
@@ -890,7 +900,7 @@ async def main():
             
             participants_count = source_info.get('participants_count', 0)
             if participants_count and participants_count > 0:
-                logger.info(f"    👥 {participants_count} members")
+                logger.info(f"    👥 {participants_count:,} members")
         
         # Send startup notification to owner
         startup_message = (
@@ -915,19 +925,29 @@ async def main():
                 startup_message += f" (@{source_info['username']})"
             startup_message += "\n"
         
-        startup_message += f"\n🚀 **Pump.fun Ready!**"
+        startup_message += f"\n🚀 **System Ready!**"
             
         await send_dm_to_owner(startup_message)
         
         # Start background tasks
+        logger.info("🔄 Starting background monitoring tasks...")
         background_task = asyncio.create_task(background_tasks())
+        
+        logger.info("🎯 Bot is now actively monitoring for messages and managing trades!")
         
         # Keep the client running
         try:
             await client.run_until_disconnected()
         finally:
+            logger.info("🛑 Shutting down background tasks...")
             background_task.cancel()
+            try:
+                await background_task
+            except asyncio.CancelledError:
+                logger.info("✅ Background tasks stopped")
         
+    except KeyboardInterrupt:
+        logger.info("👋 Bot stopped by user (Ctrl+C)")
     except Exception as e:
         logger.error(f"❌ Fatal error: {e}")
         import traceback
@@ -935,4 +955,9 @@ async def main():
         raise
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\n👋 Bot stopped by user")
+    except Exception as e:
+        print(f"❌ Fatal error: {e}")
