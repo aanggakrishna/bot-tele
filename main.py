@@ -51,6 +51,38 @@ multi_platform_service = MultiPlatformTradingService(solana_service)
 client = TelegramClient('solana_bot', API_ID, API_HASH)
 
 # --- Helper Functions ---
+async def get_group_info(group_id):
+    """Get group information including name"""
+    try:
+        # Convert to absolute value if negative
+        actual_group_id = -abs(group_id) if group_id > 0 else group_id
+        
+        # Get group entity
+        group_entity = await client.get_entity(actual_group_id)
+        
+        # Safely get participants count
+        participants_count = getattr(group_entity, 'participants_count', None)
+        if participants_count is None:
+            participants_count = 0
+        
+        group_info = {
+            'id': actual_group_id,
+            'title': getattr(group_entity, 'title', 'Unknown Group'),
+            'username': getattr(group_entity, 'username', None),
+            'participants_count': participants_count
+        }
+        
+        return group_info
+        
+    except Exception as e:
+        logger.error(f"❌ Error getting group info for {group_id}: {e}")
+        return {
+            'id': group_id,
+            'title': 'Unknown Group',
+            'username': None,
+            'participants_count': 0
+        }
+
 async def send_dm_to_owner(message):
     """Send direct message to bot owner"""
     try:
@@ -623,7 +655,8 @@ async def main():
             f"📊 Max Trades: `{MAX_PURCHASES_ALLOWED}`\n"
             f"💰 Buy Amount: `{AMOUNT_TO_BUY_SOL} SOL`\n"
             f"📈 Take Profit: `{TAKE_PROFIT_PERCENT*100:.1f}%`\n"
-            f"🛑 Stop Loss: `{STOP_LOSS_PERCENT*100:.1f}%`"
+            f"🛑 Stop Loss: `{STOP_LOSS_PERCENT*100:.1f}%`\n"
+            f"🚀 **Pump.fun Ready!**"
         )
         
         # Add optional info to startup message
@@ -649,13 +682,6 @@ async def main():
         import traceback
         logger.error(f"Traceback: {traceback.format_exc()}")
         raise
-
-# ... keep all other code the same ...
-
-if __name__ == "__main__":
-    asyncio.run(main())
-
-# ... keep all other code the same ...
 
 if __name__ == "__main__":
     asyncio.run(main())
