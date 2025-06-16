@@ -75,13 +75,15 @@ async def test_jupiter_api():
         logger.error(f"❌ Jupiter API test failed: {e}")
         return False
 
+
 async def debug_solana_service():
     """Debug function to test solana service"""
     try:
-        # Test with a known valid address
-        test_address = "So11111111111111111111111111111111111111112"  # WSOL
+        # Test with a known valid token address (not WSOL)
+        # Using BONK token as example (common Solana token)
+        test_address = "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263"  # BONK token
         
-        logger.info(f"Testing solana service with address: {test_address}")
+        logger.info(f"Testing solana service with token address: {test_address}")
         
         # Skip the price test if wallet is not initialized
         if not solana_service.solana_service_instance.keypair:
@@ -93,11 +95,11 @@ async def debug_solana_service():
         try:
             price = await solana_service.get_token_price_sol(PublicKey.from_string(test_address))
             if price:
-                logger.info(f"✅ Price fetch successful: {price} SOL")
+                logger.info(f"✅ Price fetch successful: {price} SOL per token")
             else:
-                logger.warning("⚠️ Could not fetch price (this is normal for WSOL)")
+                logger.warning("⚠️ Could not fetch price")
         except Exception as price_e:
-            logger.warning(f"⚠️ Price test failed (this might be normal): {price_e}")
+            logger.warning(f"⚠️ Price test failed: {price_e}")
         
         return True
         
@@ -487,65 +489,173 @@ async def monitor_trades_and_sell():
     finally:
         db.close()
 
+async def test_jupiter_api():
+    """Test Jupiter API connectivity"""
+    try:
+        logger.info("Testing Jupiter API connectivity...")
+        jupiter_url = os.getenv('JUPITER_API_URL', 'https://quote-api.jup.ag/v6')
+        
+        async with aiohttp.ClientSession() as session:
+            # Test simple quote request
+            url = f"{jupiter_url}/quote"
+            params = {
+                'inputMint': 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263',  # BONK
+                'outputMint': 'So11111111111111111111111111111111111111112',   # WSOL
+                'amount': 1000000,  # 1 BONK (6 decimals)
+                'slippageBps': 500
+            }
+            
+            async with session.get(url, params=params, timeout=10) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    logger.info(f"✅ Jupiter API is working - Quote: {data.get('outAmount', 'unknown')} lamports")
+                    return True
+                else:
+                    logger.warning(f"⚠️ Jupiter API returned status: {response.status}")
+                    return False
+                    
+    except Exception as e:
+        logger.error(f"❌ Jupiter API test failed: {e}")
+        return False
 # --- Main Application ---
 async def main():
-    """Main application entry point"""
-    logger.info("🔧 Initializing database...")
-    init_db()
-
-    # Test Jupiter API
-    logger.info("🧪 Testing Jupiter API connectivity...")
-    jupiter_ok = await test_jupiter_api()
-    if not jupiter_ok:
-        logger.warning("⚠️ Jupiter API test failed - trading may not work properly")
-        await send_dm_to_owner("⚠️ **Warning**: Jupiter API connectivity issue detected.")
-
-    # Test Solana service
-    logger.info("🧪 Testing Solana service...")
-    solana_ok = await debug_solana_service()
-    if not solana_ok:
-        logger.warning("⚠️ Solana service test failed")
-
-    logger.info("📱 Starting Telegram client...")
-    await client.start()
-    logger.info("✅ Telegram client started.")
-
-    # Start heartbeat
-    await start_heartbeat()
-    logger.info("💓 Heartbeat started.")
-
-    # Verify group connection
+    """Main function"""
     try:
-        entity = await client.get_entity(GROUP_ID)
-        logger.info(f"🎯 Connected to group: {entity.title} ({entity.id})")
-        await send_dm_to_owner(
-            f"🚀 **Bot Started Successfully!**\n\n"
-            f"🎯 Monitoring Group: `{entity.title}`\n"
-            f"💰 Buy Amount: `{AMOUNT_TO_BUY_SOL} SOL`\n"
-            f"📈 Take Profit: `{TAKE_PROFIT_PERCENT*100:.1f}%`\n"
-            f"🛑 Stop Loss: `{STOP_LOSS_PERCENT*100:.1f}%`\n"
-            f"🔢 Max Trades: `{MAX_PURCHASES_ALLOWED}`\n"
-            f"🌐 Network: `{'Devnet' if 'devnet' in RPC_URL else 'Mainnet'}`"
-        )
-    except Exception as e:
-        logger.error(f"❌ Error getting group entity for {GROUP_ID}: {e}")
-        await send_dm_to_owner(f"🚨 **Connection Error**\n\nCannot connect to group `{GROUP_ID}`\nEnsure bot is a member of the group.")
-        return
-
-    logger.info("🎉 Bot is fully initialized and running!")
-    logger.info("📡 Listening for pinned messages and monitoring trades...")
-    
-    # Keep the bot running
-    await client.run_until_disconnected()
-
-if __name__ == '__main__':
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        logger.info("🛑 Bot stopped by user (KeyboardInterrupt).")
-    except Exception as e:
-        logger.critical(f"🚨 Critical error occurred: {e}", exc_info=True)
+        logger.info("🚀 Starting Solana Trading Bot...")
+        
+        # Test Jupiter API first
+        jupiter_working = await test_jupiter_api()
+        if not jupiter_working:
+            logger.warning("⚠️ Jupiter API test failed, but continuing...")
+        
+        # Initialize database
+        init_db()
+        logger.info("✅ Database initialized")
+        
+        # Initialize Solana service
         try:
-            asyncio.run(send_dm_to_owner(f"🚨 **CRITICAL ERROR**\n\nBot crashed: `{str(e)[:200]}`"))
-        except:
-            pass
+            solana_service.init_solana_config_from_env()
+            logger.info("✅ Solana service initialized")
+        except Exception as e:
+            logger.warning(f"⚠️ Solana service initialization had issues: {e}")
+            logger.info("🔄 Continuing in monitoring mode...")
+        
+        # Test Solana service
+        logger.info("🧪 Testing Solana service...")
+        solana_test_success = await debug_solana_service()
+        
+        if not solana_test_success:
+            logger.warning("⚠️ Solana service test failed")
+        
+        # Initialize Telegram client
+        client = TelegramClient('session', API_ID, API_HASH)
+        
+        # Start the client
+        await client.start()
+        logger.info("✅ Telegram client started")
+        
+        # Get me info
+        me = await client.get_me()
+        logger.info(f"👤 Logged in as: {me.first_name} (@{me.username})")
+        
+        # Set up event handlers
+        @client.on(events.NewMessage(chats=[GROUP_ID]))
+        async def handle_new_message(event):
+            try:
+                message_text = event.message.message
+                if not message_text:
+                    return
+                
+                logger.info(f"📨 New message: {message_text[:100]}...")
+                
+                # Extract Solana contract address
+                contract_addresses = extract_solana_ca_enhanced(message_text)
+                
+                if contract_addresses:
+                    for ca in contract_addresses:
+                        logger.info(f"🎯 Contract address found: {ca}")
+                        
+                        # Check if we already have active trades for this token
+                        db = next(get_db())
+                        active_trades = get_active_trades(db)
+                        
+                        # Check if we've reached max purchases
+                        total_active = get_total_active_trades_count(db)
+                        max_allowed = int(os.getenv('MAX_PURCHASES_ALLOWED', '2'))
+                        
+                        if total_active >= max_allowed:
+                            logger.warning(f"⚠️ Max purchases reached: {total_active}/{max_allowed}")
+                            continue
+                        
+                        # Check if we already have this token
+                        existing_trade = any(trade.token_mint_address == ca for trade in active_trades)
+                        if existing_trade:
+                            logger.info(f"⚠️ Already have active trade for {ca}")
+                            continue
+                        
+                        # Create trading service and execute buy
+                        trading_service = MultiPlatformTradingService()
+                        success = await trading_service.buy_token_and_track(ca)
+                        
+                        if success:
+                            logger.info(f"✅ Successfully bought and tracking {ca}")
+                        else:
+                            logger.warning(f"❌ Failed to buy {ca}")
+                
+            except Exception as e:
+                logger.error(f"❌ Error handling message: {e}")
+        
+        # Start monitoring for stop-loss and take-profit
+        @aiocron.crontab('*/30 * * * * *')  # Every 30 seconds
+        async def monitor_positions():
+            try:
+                db = next(get_db())
+                active_trades = get_active_trades(db)
+                
+                if not active_trades:
+                    return
+                
+                logger.info(f"📊 Monitoring {len(active_trades)} active positions...")
+                
+                trading_service = MultiPlatformTradingService()
+                
+                for trade in active_trades:
+                    try:
+                        should_sell, reason = await trading_service.should_sell_token(
+                            trade.token_mint_address,
+                            trade.buy_price_sol,
+                            trade.amount_bought_token
+                        )
+                        
+                        if should_sell:
+                            logger.info(f"🔔 Selling {trade.token_mint_address}: {reason}")
+                            
+                            success = await trading_service.sell_token_and_update(
+                                trade.token_mint_address,
+                                trade.amount_bought_token,
+                                trade.wallet_token_account
+                            )
+                            
+                            if success:
+                                logger.info(f"✅ Successfully sold {trade.token_mint_address}")
+                            else:
+                                logger.warning(f"❌ Failed to sell {trade.token_mint_address}")
+                    
+                    except Exception as trade_error:
+                        logger.error(f"❌ Error monitoring trade {trade.token_mint_address}: {trade_error}")
+                
+            except Exception as e:
+                logger.error(f"❌ Error in position monitoring: {e}")
+        
+        logger.info("🎯 Bot is running and monitoring...")
+        logger.info(f"📺 Monitoring group: {GROUP_ID}")
+        
+        # Keep the client running
+        await client.run_until_disconnected()
+        
+    except Exception as e:
+        logger.error(f"❌ Fatal error: {e}")
+        raise
+
+if __name__ == "__main__":
+    asyncio.run(main())
