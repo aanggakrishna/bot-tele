@@ -5,24 +5,25 @@ Run this to generate a new wallet or convert existing wallet.json to base58
 
 import json
 import base58
-from solana.keypair import Keypair
+from solders.keypair import Keypair
 import os
 
 def generate_new_wallet():
     """Generate a new Solana wallet"""
-    keypair = Keypair.generate()
+    keypair = Keypair()
     
     print("🔑 New Solana Wallet Generated!")
-    print(f"📍 Public Key: {keypair.public_key}")
-    print(f"🔐 Private Key (Base58): {base58.b58encode(keypair.secret_key).decode('utf-8')}")
+    print(f"📍 Public Key: {keypair.pubkey()}")
+    print(f"🔐 Private Key (Base58): {base58.b58encode(bytes(keypair)).decode('utf-8')}")
     
     # Save to wallet.json
     with open('wallet.json', 'w') as f:
-        json.dump(list(keypair.secret_key), f)
+        json.dump(list(bytes(keypair)), f)
     
     print("💾 Wallet saved to wallet.json")
     print("\n⚠️  IMPORTANT: Keep your private key secure and never share it!")
     print("💰 Fund this wallet with SOL before running the bot")
+    print(f"🌐 Check balance: https://solscan.io/account/{keypair.pubkey()}")
 
 def convert_wallet_json_to_base58():
     """Convert existing wallet.json to base58 format"""
@@ -35,12 +36,13 @@ def convert_wallet_json_to_base58():
             wallet_data = json.load(f)
         
         private_key_bytes = bytes(wallet_data)
-        keypair = Keypair.from_secret_key(private_key_bytes)
-        base58_key = base58.b58encode(keypair.secret_key).decode('utf-8')
+        keypair = Keypair.from_bytes(private_key_bytes)
+        base58_key = base58.b58encode(bytes(keypair)).decode('utf-8')
         
         print("🔄 Wallet.json converted!")
-        print(f"📍 Public Key: {keypair.public_key}")
+        print(f"📍 Public Key: {keypair.pubkey()}")
         print(f"🔐 Private Key (Base58): {base58_key}")
+        print(f"🌐 Check balance: https://solscan.io/account/{keypair.pubkey()}")
         print("\n📝 Copy the Base58 private key to your .env file:")
         print(f"SOLANA_PRIVATE_KEY_BASE58={base58_key}")
         
