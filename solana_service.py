@@ -30,6 +30,7 @@ class SolanaService:
         self.keypair = None
         self.rpc_url = os.getenv('RPC_URL', 'https://api.mainnet-beta.solana.com')
         self.jupiter_api = 'https://quote-api.jup.ag/v6'
+        self.jupiter_price_api = 'https://api.jup.ag/price/v2'  # Fixed price API
         self.enable_real_trading = os.getenv('ENABLE_REAL_TRADING', 'false').lower() == 'true'
         self.solana_available = SOLANA_AVAILABLE
         
@@ -106,8 +107,8 @@ class SolanaService:
             
             logger.debug(f"🔍 Getting price for: {token_mint_str}")
             
-            # Try Jupiter Price API first
-            price = await self._get_jupiter_price(token_mint_str)
+            # Try Jupiter Price API first (fixed)
+            price = await self._get_jupiter_price_fixed(token_mint_str)
             if price and price > 0:
                 return price
             
@@ -129,30 +130,41 @@ class SolanaService:
             logger.error(f"❌ Error getting price for {token_mint_str}: {e}")
             return 0.00001
     
-    async def _get_jupiter_price(self, token_mint: str) -> Optional[float]:
-        """Get price from Jupiter API (fixed URL)"""
+    async def _get_jupiter_price_fixed(self, token_mint: str) -> Optional[float]:
+        """Get price from Jupiter Price API v2 (Fixed)"""
         try:
-            url = f"{self.jupiter_api}/price"
-            params = {
-                'ids': token_mint,
-                'vsToken': 'So11111111111111111111111111111111111111112'  # SOL
-            }
+            # Try multiple Jupiter price endpoints
+            endpoints = [
+                f"{self.jupiter_price_api}?ids={token_mint}&vs_currency=sol",
+                f"https://api.jup.ag/price/v2?ids={token_mint}",
+                f"https://quote-api.jup.ag/v6/price?ids={token_mint}&vsToken=So11111111111111111111111111111111111111112"
+            ]
             
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, params=params, timeout=10) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        if 'data' in data and token_mint in data['data']:
-                            price = float(data['data'][token_mint]['price'])
-                            logger.debug(f"💰 Jupiter price: {price} SOL")
-                            return price
-                        else:
-                            logger.debug(f"No price data for {token_mint} in Jupiter response")
-                    else:
-                        logger.debug(f"Jupiter API returned status: {response.status}")
+            for endpoint in endpoints:
+                try:
+                    async with aiohttp.ClientSession() as session:
+                        async with session.get(endpoint, timeout=10) as response:
+                            if response.status == 200:
+                                data = await response.json()
+                                
+                                # Handle different response formats
+                                if 'data' in data and token_mint in data['data']:
+                                    price = float(data['data'][token_mint].get('price', 0))
+                                elif token_mint in data:
+                                    price = float(data[token_mint].get('price', 0))
+                                else:
+                                    continue
+                                
+                                if price > 0:
+                                    logger.debug(f"💰 Jupiter price: {price} SOL")
+                                    return price
+                                    
+                except Exception as e:
+                    logger.debug(f"Jupiter endpoint {endpoint} failed: {e}")
+                    continue
                         
         except Exception as e:
-            logger.debug(f"Jupiter API failed: {e}")
+            logger.debug(f"Jupiter price API failed: {e}")
         return None
     
     async def _get_dexscreener_price(self, token_mint: str) -> Optional[float]:
@@ -165,7 +177,7 @@ class SolanaService:
                     if response.status == 200:
                         data = await response.json()
                         if 'pairs' in data and len(data['pairs']) > 0:
-                            # Look for SOL pairs
+                            # Look for SOL pairs first
                             for pair in data['pairs']:
                                 quote_token = pair.get('quoteToken', {})
                                 if quote_token.get('symbol') == 'SOL' or quote_token.get('address') == 'So11111111111111111111111111111111111111112':
@@ -174,19 +186,36 @@ class SolanaService:
                                         logger.debug(f"💰 DexScreener price: {price} SOL")
                                         return price
                             
-                            # If no SOL pair, try to calculate from USD price
+                            # If no SOL pair, calculate from USD (rough estimate)
                             for pair in data['pairs']:
                                 usd_price = float(pair.get('priceUsd', 0))
                                 if usd_price > 0:
-                                    # Assume SOL = $100 for rough calculation (you can make this dynamic)
-                                    sol_price_estimate = 100.0  
-                                    price_in_sol = usd_price / sol_price_estimate
-                                    logger.debug(f"💰 DexScreener estimated price: {price_in_sol} SOL (from USD)")
-                                    return price_in_sol
+                                    # Get current SOL price in USD (rough estimate)
+                                    sol_usd_price = await self._get_sol_usd_price()
+                                    if sol_usd_price:
+                                        price_in_sol = usd_price / sol_usd_price
+                                        logger.debug(f"💰 DexScreener estimated price: {price_in_sol} SOL")
+                                        return price_in_sol
                         
         except Exception as e:
             logger.debug(f"DexScreener API failed: {e}")
         return None
+    
+    async def _get_sol_usd_price(self) -> Optional[float]:
+        """Get current SOL price in USD"""
+        try:
+            # Try CoinGecko
+            url = "https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd"
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=5) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        return float(data.get('solana', {}).get('usd', 100))
+        except:
+            pass
+        
+        # Fallback estimate
+        return 100.0  # Rough SOL price estimate
     
     async def _get_birdeye_price(self, token_mint: str) -> Optional[float]:
         """Get price from Birdeye API"""
@@ -204,11 +233,11 @@ class SolanaService:
                         if data.get('success') and 'data' in data:
                             usd_price = float(data['data'].get('value', 0))
                             if usd_price > 0:
-                                # Convert to SOL (rough estimate - you can get real SOL price)
-                                sol_price_estimate = 100.0
-                                price_in_sol = usd_price / sol_price_estimate
-                                logger.debug(f"💰 Birdeye estimated price: {price_in_sol} SOL")
-                                return price_in_sol
+                                sol_usd_price = await self._get_sol_usd_price()
+                                if sol_usd_price:
+                                    price_in_sol = usd_price / sol_usd_price
+                                    logger.debug(f"💰 Birdeye estimated price: {price_in_sol} SOL")
+                                    return price_in_sol
                         
         except Exception as e:
             logger.debug(f"Birdeye API failed: {e}")
@@ -299,7 +328,7 @@ class SolanaService:
             )
             
             if not quote:
-                logger.error("❌ Could not get Jupiter quote")
+                logger.error("❌ Could not get Jupiter quote for buy")
                 return None
             
             logger.info(f"✅ Jupiter quote received - Expected output: {quote.get('outAmount', 'unknown')} tokens")
@@ -335,7 +364,7 @@ class SolanaService:
             return None
     
     async def _get_jupiter_quote(self, input_mint: str, output_mint: str, amount: int, slippage_bps: int) -> Optional[Dict]:
-        """Get Jupiter swap quote"""
+        """Get Jupiter swap quote with enhanced error handling"""
         try:
             url = f"{self.jupiter_api}/quote"
             params = {
@@ -354,8 +383,14 @@ class SolanaService:
                 async with session.get(url, params=params, timeout=15) as response:
                     if response.status == 200:
                         quote_data = await response.json()
-                        logger.debug(f"💱 Jupiter quote received: {quote_data.get('outAmount', 'unknown')} tokens expected")
-                        return quote_data
+                        
+                        # Validate quote data
+                        if 'outAmount' in quote_data and int(quote_data['outAmount']) > 0:
+                            logger.debug(f"💱 Jupiter quote received: {quote_data.get('outAmount', 'unknown')} tokens expected")
+                            return quote_data
+                        else:
+                            logger.error("❌ Invalid quote data - no output amount")
+                            return None
                     else:
                         response_text = await response.text()
                         logger.error(f"❌ Jupiter quote API error {response.status}: {response_text}")
@@ -374,13 +409,15 @@ class SolanaService:
                 'userPublicKey': str(self.keypair.pubkey()),
                 'wrapAndUnwrapSol': True,
                 'computeUnitPriceMicroLamports': 'auto',
-                'prioritizationFeeLamports': 'auto'
+                'prioritizationFeeLamports': {
+                    'auto': {}
+                }
             }
             
             logger.debug(f"🔗 Jupiter swap URL: {url}")
             
             async with aiohttp.ClientSession() as session:
-                async with session.post(url, json=payload, timeout=15) as response:
+                async with session.post(url, json=payload, timeout=20) as response:
                     if response.status == 200:
                         swap_data = await response.json()
                         if 'swapTransaction' in swap_data:
