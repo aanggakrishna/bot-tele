@@ -82,7 +82,7 @@ JUPITER_API_URL = os.getenv('JUPITER_API_URL', 'https://quote-api.jup.ag/v6')
 
 # --- Initialize Services ---
 logger.info("Initializing Solana service...")
-solana_service.init_solana_config_from_env()
+init_solana_config_from_env()
 
 logger.info("Initializing multi-platform trading service...")
 multi_platform_service = MultiPlatformTradingService(solana_service)
