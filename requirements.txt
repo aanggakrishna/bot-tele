@@ -1,10 +1,22 @@
-telethon>=1.34.0
-python-dotenv>=1.0.0
-solana>=0.34.0
-solders>=0.18.0
-aiohttp>=3.9.0
-aiocron>=1.8
-sqlalchemy>=2.0.0
-loguru>=0.7.0
-base58>=2.1.0
-solathon>=1.0.2
+# Telegram Bot
+telethon==1.30.3
+python-dotenv==1.0.0
+
+# Solana Trading
+solana==0.30.2
+solders==0.18.1
+aiohttp==3.8.6
+base58==2.1.1
+
+# Database
+sqlalchemy==2.0.23
+alembic==1.12.1
+
+# Utilities
+requests==2.31.0
+loguru==0.7.2
+asyncio-throttle==1.0.2
+
+# Data processing
+pandas==2.1.3
+numpy==1.25.2
