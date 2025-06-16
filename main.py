@@ -4,6 +4,8 @@ import asyncio
 import time
 from datetime import datetime, timedelta
 from telethon import TelegramClient, events
+from telethon.tl.functions.channels import GetFullChannelRequest
+from telethon.tl.functions.messages import GetFullChatRequest
 from dotenv import load_dotenv
 from loguru import logger
 import aiocron

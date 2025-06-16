@@ -1,563 +1,297 @@
-# solana_service.py - Full version with .env support
-
-import os
 import asyncio
 import json
-import base58
-import base64
-import aiohttp
-from dotenv import load_dotenv
-from solders.pubkey import Pubkey as PublicKey
-from solders.keypair import Keypair
-from solders.system_program import TransferParams, transfer
-from solana.rpc.async_api import AsyncClient
-from solana.rpc.commitment import Confirmed
-from solana.transaction import Transaction
-from loguru import logger
+import os
 from typing import Optional, Dict, Any
+import aiohttp
+import base58
+from solana.rpc.async_api import AsyncClient
+from solana.keypair import Keypair
+from solana.transaction import Transaction
+from solders.pubkey import Pubkey as PublicKey
+from loguru import logger
+from dotenv import load_dotenv
 
-# Load environment variables from .env file
 load_dotenv()
 
-# Global variables
-rpc_client = None
-wallet_keypair = None
-global_amount_to_buy_sol = None
-global_slippage_bps = None
-global_jupiter_api_url = None
-
-def init_solana_config(rpc_url: str = None, private_key_path: str = None, 
-                      amount_to_buy_sol: float = None, slippage_bps: int = None, 
-                      jupiter_api_url: str = None, solana_private_key_base58: str = None):
-    """
-    Initialize Solana configuration
-    If parameters are None, will try to load from environment variables
-    """
-    global rpc_client, wallet_keypair, global_amount_to_buy_sol, global_slippage_bps, global_jupiter_api_url
-    
-    # Load from environment variables if not provided
-    rpc_url = rpc_url or os.getenv('SOLANA_RPC_URL')
-    private_key_path = private_key_path or os.getenv('SOLANA_PRIVATE_KEY_PATH')
-    amount_to_buy_sol = amount_to_buy_sol or float(os.getenv('AMOUNT_TO_BUY_SOL', '0.1'))
-    slippage_bps = slippage_bps or int(os.getenv('SLIPPAGE_BPS', '50'))
-    jupiter_api_url = jupiter_api_url or os.getenv('JUPITER_API_URL', 'https://quote-api.jup.ag/v6')
-    solana_private_key_base58 = solana_private_key_base58 or os.getenv('SOLANA_PRIVATE_KEY_BASE58')
-    
-    # Validate required parameters
-    if not rpc_url:
-        raise ValueError("SOLANA_RPC_URL is required (either as parameter or environment variable)")
-    
-    if not solana_private_key_base58 and not private_key_path:
-        raise ValueError("Either SOLANA_PRIVATE_KEY_BASE58 or SOLANA_PRIVATE_KEY_PATH is required")
-    
-    # Initialize RPC client
-    rpc_client = AsyncClient(rpc_url)
-    logger.info(f"Initialized Solana RPC client with URL: {rpc_url}")
-    
-    # Initialize wallet keypair
-    if solana_private_key_base58:
+class SolanaService:
+    def __init__(self):
+        self.rpc_client = None
+        self.keypair = None
+        self.jupiter_api_url = os.getenv('JUPITER_API_URL', 'https://quote-api.jup.ag/v6')
+        self.slippage_bps = int(os.getenv('SLIPPAGE_BPS', '500'))
+        
+    def init_solana_config_from_env(self):
+        """Initialize Solana configuration from environment variables"""
         try:
-            private_key_bytes = base58.b58decode(solana_private_key_base58)
-            wallet_keypair = Keypair.from_bytes(private_key_bytes)
-            logger.info(f"Loaded wallet keypair from base58: {wallet_keypair.pubkey()}")
-        except Exception as e:
-            logger.error(f"Failed to load keypair from base58: {e}")
-            raise
-    elif private_key_path and os.path.exists(private_key_path):
-        try:
-            with open(private_key_path, 'r') as f:
-                private_key_data = json.load(f)
+            # Initialize RPC client
+            rpc_url = os.getenv('RPC_URL', 'https://api.mainnet-beta.solana.com')
+            self.rpc_client = AsyncClient(rpc_url)
+            logger.info(f"🌐 Solana RPC client initialized: {rpc_url}")
             
-            if isinstance(private_key_data, list):
-                private_key_bytes = bytes(private_key_data)
-            else:
-                private_key_bytes = base58.b58decode(private_key_data)
+            # Initialize wallet keypair
+            private_key_base58 = os.getenv('SOLANA_PRIVATE_KEY_BASE58')
+            wallet_path = os.getenv('PRIVATE_KEY_PATH')
             
-            wallet_keypair = Keypair.from_bytes(private_key_bytes)
-            logger.info(f"Loaded wallet keypair from file: {wallet_keypair.pubkey()}")
-        except Exception as e:
-            logger.error(f"Failed to load keypair from file: {e}")
-            raise
-    else:
-        logger.error("No valid private key source provided")
-        raise ValueError("No valid private key source provided")
-    
-    # Set global variables
-    global_amount_to_buy_sol = amount_to_buy_sol
-    global_slippage_bps = slippage_bps
-    global_jupiter_api_url = jupiter_api_url
-    
-    logger.info(f"Solana service initialized:")
-    logger.info(f"  - Wallet: {wallet_keypair.pubkey()}")
-    logger.info(f"  - Amount: {global_amount_to_buy_sol} SOL")
-    logger.info(f"  - Slippage: {global_slippage_bps} BPS")
-    logger.info(f"  - Jupiter API: {global_jupiter_api_url}")
-
-def init_solana_config_from_env():
-    """
-    Initialize Solana configuration using only environment variables
-    Convenience function for easier setup
-    """
-    return init_solana_config()
-
-def validate_token_address(token_address: str) -> Optional[PublicKey]:
-    """
-    Validate and convert token address string to PublicKey
-    Returns PublicKey if valid, None if invalid
-    """
-    if not token_address or not isinstance(token_address, str):
-        logger.error(f"Invalid token address input: {token_address}")
-        return None
-    
-    # Remove any whitespace
-    token_address = token_address.strip()
-    
-    # Check length
-    if not (32 <= len(token_address) <= 50):
-        logger.error(f"Invalid token address length: {len(token_address)} (expected 32-44)")
-        return None
-    
-    # Check base58 characters
-    valid_chars = set('123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz')
-    if not all(c in valid_chars for c in token_address):
-        logger.error(f"Invalid base58 characters in token address: {token_address}")
-        return None
-    
-    try:
-        # Try to create PublicKey
-        clean_address = token_address[:44]
-        pubkey = PublicKey.from_string(clean_address)
-        logger.info(f"✅ Valid token address: {clean_address}")
-        return pubkey
-    except Exception as e:
-        logger.error(f"Failed to create PublicKey from address '{token_address}': {e}")
-        
-        # Try base58 decode as fallback
-        try:
-            decoded = base58.b58decode(token_address)
-            if len(decoded) == 32:
-                pubkey = PublicKey(decoded)
-                logger.info(f"✅ Valid token address (base58 fallback): {token_address}")
-                return pubkey
+            if private_key_base58 and private_key_base58 != 'your_actual_base58_private_key_here':
+                # Use base58 private key
+                try:
+                    private_key_bytes = base58.b58decode(private_key_base58)
+                    self.keypair = Keypair.from_secret_key(private_key_bytes)
+                    logger.info(f"🔑 Wallet loaded from base58 key: {self.keypair.public_key}")
+                except Exception as e:
+                    logger.error(f"❌ Error loading base58 private key: {e}")
+                    raise
+            elif wallet_path and os.path.exists(wallet_path):
+                # Use wallet file
+                try:
+                    with open(wallet_path, 'r') as f:
+                        wallet_data = json.load(f)
+                    private_key_bytes = bytes(wallet_data)
+                    self.keypair = Keypair.from_secret_key(private_key_bytes)
+                    logger.info(f"🔑 Wallet loaded from file: {self.keypair.public_key}")
+                except Exception as e:
+                    logger.error(f"❌ Error loading wallet file: {e}")
+                    raise
             else:
-                logger.error(f"Decoded address has wrong length: {len(decoded)} bytes (expected 32)")
-        except Exception as e2:
-            logger.error(f"Base58 decode also failed for '{token_address}': {e2}")
-        
-        return None
+                raise ValueError("No valid private key found. Set SOLANA_PRIVATE_KEY_BASE58 or PRIVATE_KEY_PATH")
+                
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize Solana config: {e}")
+            raise
 
-async def get_wallet_balance() -> Optional[float]:
-    """
-    Get wallet SOL balance
-    """
-    global rpc_client, wallet_keypair
-    
-    if not rpc_client or not wallet_keypair:
-        logger.error("Solana service not initialized")
-        return None
-    
-    try:
-        response = await rpc_client.get_balance(wallet_keypair.pubkey())
-        if response.value is not None:
-            balance_sol = response.value / 1_000_000_000  # Convert lamports to SOL
-            logger.info(f"Wallet balance: {balance_sol:.6f} SOL")
-            return balance_sol
-        else:
-            logger.error("Failed to get wallet balance")
-            return None
-    except Exception as e:
-        logger.error(f"Error getting wallet balance: {e}")
-        return None
-
-async def get_token_price_sol(token_mint: PublicKey) -> Optional[float]:
-    """
-    Get token price in SOL using Jupiter API
-    """
-    try:
-        if not global_jupiter_api_url:
-            logger.error("Jupiter API URL not configured")
-            return None
-        
-        # Use Jupiter price API
-        url = f"{global_jupiter_api_url}/price"
-        params = {
-            'ids': str(token_mint),
-            'vsToken': 'So11111111111111111111111111111111111111112'  # SOL mint address
-        }
-        
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, params=params) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    
-                    if 'data' in data and str(token_mint) in data['data']:
-                        price_data = data['data'][str(token_mint)]
-                        price_sol = float(price_data.get('price', 0))
-                        logger.info(f"Token {token_mint} price: {price_sol:.8f} SOL")
+    async def get_token_price_sol(self, token_mint: PublicKey) -> Optional[float]:
+        """Get token price in SOL using Jupiter API"""
+        try:
+            # Convert 1 token to SOL
+            input_mint = str(token_mint)
+            output_mint = "So11111111111111111111111111111111111111112"  # WSOL
+            amount = 1000000  # 1 token with 6 decimals
+            
+            async with aiohttp.ClientSession() as session:
+                url = f"{self.jupiter_api_url}/quote"
+                params = {
+                    'inputMint': input_mint,
+                    'outputMint': output_mint,
+                    'amount': amount,
+                    'slippageBps': self.slippage_bps
+                }
+                
+                async with session.get(url, params=params) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        out_amount = int(data['outAmount'])
+                        # Convert lamports to SOL
+                        price_sol = out_amount / 1_000_000_000  # 1 SOL = 1e9 lamports
                         return price_sol
                     else:
-                        logger.warning(f"No price data found for token {token_mint}")
+                        logger.warning(f"Jupiter quote API error: {response.status}")
                         return None
-                else:
-                    logger.error(f"Jupiter API error: {response.status}")
-                    return None
-    
-    except Exception as e:
-        logger.error(f"Error fetching token price: {e}")
-        return None
+                        
+        except Exception as e:
+            logger.error(f"Error getting token price: {e}")
+            return None
 
-async def get_token_info(token_mint: PublicKey) -> Optional[Dict[str, Any]]:
-    """
-    Get token information from Jupiter API
-    """
-    try:
-        if not global_jupiter_api_url:
-            logger.error("Jupiter API URL not configured")
-            return None
-        
-        url = f"{global_jupiter_api_url}/tokens/{str(token_mint)}"
-        
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url) as response:
-                if response.status == 200:
-                    token_info = await response.json()
-                    logger.info(f"Token info for {token_mint}: {token_info.get('name', 'Unknown')}")
-                    return token_info
-                else:
-                    logger.warning(f"Could not fetch token info for {token_mint}")
-                    return None
-    
-    except Exception as e:
-        logger.error(f"Error fetching token info: {e}")
-        return None
-
-async def buy_token_solana(token_address: str, custom_amount: float = None) -> Optional[Dict[str, Any]]:
-    """
-    Buy token using Jupiter swap
-    """
-    global rpc_client, wallet_keypair, global_amount_to_buy_sol, global_slippage_bps, global_jupiter_api_url
-    
-    if not all([rpc_client, wallet_keypair, global_amount_to_buy_sol, global_slippage_bps, global_jupiter_api_url]):
-        logger.error("Solana service not properly initialized")
-        return None
-    
-    # Use custom amount if provided, otherwise use global amount
-    buy_amount = custom_amount or global_amount_to_buy_sol
-    
-    try:
-        logger.info(f"Starting buy process for token: {token_address}")
-        
-        # Check wallet balance first
-        wallet_balance = await get_wallet_balance()
-        if wallet_balance is None or wallet_balance < buy_amount:
-            logger.error(f"Insufficient balance. Required: {buy_amount} SOL, Available: {wallet_balance} SOL")
-            return None
-        
-        # Validate token address
-        token_pubkey = validate_token_address(token_address)
-        if not token_pubkey:
-            logger.error(f"Invalid token address format: {token_address}")
-            return None
-        
-        # Get token info
-        token_info = await get_token_info(token_pubkey)
-        token_name = token_info.get('name', 'Unknown') if token_info else 'Unknown'
-        token_symbol = token_info.get('symbol', 'UNK') if token_info else 'UNK'
-        
-        # SOL mint address (wrapped SOL)
-        sol_mint = PublicKey.from_string("So11111111111111111111111111111111111111112")
-        
-        # Convert SOL amount to lamports (1 SOL = 1,000,000,000 lamports)
-        amount_lamports = int(buy_amount * 1_000_000_000)
-        
-        logger.info(f"Attempting to buy {buy_amount} SOL worth of {token_name} ({token_symbol})")
-        logger.info(f"Amount in lamports: {amount_lamports}")
-        
-        # Get quote from Jupiter
-        quote_url = f"{global_jupiter_api_url}/quote"
-        quote_params = {
-            'inputMint': str(sol_mint),
-            'outputMint': str(token_pubkey),
-            'amount': amount_lamports,
-            'slippageBps': global_slippage_bps
-        }
-        
-        async with aiohttp.ClientSession() as session:
-            # Get quote
-            async with session.get(quote_url, params=quote_params) as response:
-                if response.status != 200:
-                    logger.error(f"Jupiter quote API error: {response.status}")
-                    error_text = await response.text()
-                    logger.error(f"Error response: {error_text}")
-                    return None
-                
-                quote_data = await response.json()
-                logger.info(f"Received quote for {token_symbol}")
-                
-                if 'outAmount' not in quote_data:
-                    logger.error("No outAmount in quote response")
-                    return None
-                
-                expected_token_amount = int(quote_data['outAmount'])
-                logger.info(f"Expected token amount: {expected_token_amount}")
+    async def buy_token_solana(self, token_mint_address: str) -> Optional[Dict[str, Any]]:
+        """Buy token using Jupiter swap"""
+        try:
+            logger.info(f"🔄 Initiating buy for token: {token_mint_address}")
+            
+            # Validate inputs
+            if not self.keypair:
+                raise ValueError("Wallet not initialized")
+            
+            # Get quote from Jupiter
+            sol_amount = float(os.getenv('AMOUNT_TO_BUY_SOL', '0.01'))
+            lamports = int(sol_amount * 1_000_000_000)  # Convert SOL to lamports
+            
+            quote = await self._get_jupiter_quote(
+                input_mint="So11111111111111111111111111111111111111112",  # WSOL
+                output_mint=token_mint_address,
+                amount=lamports,
+                swap_mode="ExactIn"
+            )
+            
+            if not quote:
+                logger.error("Failed to get Jupiter quote")
+                return None
             
             # Get swap transaction
-            swap_url = f"{global_jupiter_api_url}/swap"
-            swap_data = {
-                'quoteResponse': quote_data,
-                'userPublicKey': str(wallet_keypair.pubkey()),
-                'wrapAndUnwrapSol': True,
-                'computeUnitPriceMicroLamports': 'auto'
+            swap_tx = await self._get_jupiter_swap_transaction(quote)
+            if not swap_tx:
+                logger.error("Failed to get swap transaction")
+                return None
+            
+            # Execute transaction
+            tx_signature = await self._execute_transaction(swap_tx)
+            if not tx_signature:
+                logger.error("Failed to execute transaction")
+                return None
+            
+            # Calculate results
+            output_amount = int(quote['outAmount'])
+            price_per_token = lamports / output_amount if output_amount > 0 else 0
+            
+            result = {
+                'token_mint_address': token_mint_address,
+                'buy_price_sol': price_per_token,
+                'amount_bought_token': output_amount / 1_000_000,  # Assuming 6 decimals
+                'wallet_token_account': str(self.keypair.public_key),  # Simplified
+                'buy_tx_signature': tx_signature
             }
             
-            async with session.post(swap_url, json=swap_data) as response:
-                if response.status != 200:
-                    logger.error(f"Jupiter swap API error: {response.status}")
-                    error_text = await response.text()
-                    logger.error(f"Error response: {error_text}")
-                    return None
-                
-                swap_response = await response.json()
-                
-                if 'swapTransaction' not in swap_response:
-                    logger.error("No swapTransaction in response")
-                    return None
-                
-                # Decode and sign transaction
-                transaction_bytes = base64.b64decode(swap_response['swapTransaction'])
-                transaction = Transaction.deserialize(transaction_bytes)
-                
-                # Sign transaction
-                transaction.sign(wallet_keypair)
-                
-                # Send transaction
-                logger.info(f"Sending swap transaction for {token_symbol}...")
-                tx_response = await rpc_client.send_transaction(
-                    transaction,
-                    commitment=Confirmed,
-                    skip_preflight=False,
-                    max_retries=3
-                )
-                
-                if tx_response.value:
-                    tx_signature = str(tx_response.value)
-                    logger.info(f"✅ Buy transaction successful: {tx_signature}")
-                    
-                    # Calculate token decimals (default to 6 if not available)
-                    token_decimals = token_info.get('decimals', 6) if token_info else 6
-                    actual_token_amount = expected_token_amount / (10 ** token_decimals)
-                    buy_price_sol = buy_amount / actual_token_amount if actual_token_amount > 0 else 0
-                    
-                    # For now, we'll use a placeholder for wallet_token_account
-                    # In a real implementation, you'd need to derive the associated token account
-                    wallet_token_account = f"ATA_{str(wallet_keypair.pubkey())[:8]}_{str(token_pubkey)[:8]}"
-                    
-                    return {
-                        'token_mint_address': token_address,
-                        'token_name': token_name,
-                        'token_symbol': token_symbol,
-                        'buy_price_sol': buy_price_sol,
-                        'amount_bought_token': actual_token_amount,
-                        'amount_spent_sol': buy_amount,
-                        'wallet_token_account': wallet_token_account,
-                        'buy_tx_signature': tx_signature,
-                        'explorer_url': f"https://solscan.io/tx/{tx_signature}"
-                    }
-                else:
-                    logger.error("Transaction failed - no signature returned")
-                    return None
-    
-    except Exception as e:
-        logger.error(f"Error in buy_token_solana: {e}", exc_info=True)
-        return None
-
-async def sell_token_solana(token_address: str, amount_to_sell: float, 
-                           wallet_token_account: str = None) -> Optional[Dict[str, Any]]:
-    """
-    Sell token using Jupiter swap
-    """
-    global rpc_client, wallet_keypair, global_slippage_bps, global_jupiter_api_url
-    
-    if not all([rpc_client, wallet_keypair, global_slippage_bps, global_jupiter_api_url]):
-        logger.error("Solana service not properly initialized")
-        return None
-    
-    try:
-        logger.info(f"Starting sell process for token: {token_address}")
-        
-        # Validate token address
-        token_pubkey = validate_token_address(token_address)
-        if not token_pubkey:
-            logger.error(f"Invalid token address format: {token_address}")
+            logger.info(f"✅ Buy successful: {result}")
+            return result
+            
+        except Exception as e:
+            logger.error(f"❌ Error buying token: {e}")
             return None
-        
-        # Get token info
-        token_info = await get_token_info(token_pubkey)
-        token_name = token_info.get('name', 'Unknown') if token_info else 'Unknown'
-        token_symbol = token_info.get('symbol', 'UNK') if token_info else 'UNK'
-        token_decimals = token_info.get('decimals', 6) if token_info else 6
-        
-        # SOL mint address
-        sol_mint = PublicKey.from_string("So11111111111111111111111111111111111111112")
-        
-        # Convert token amount
-        amount_token_raw = int(amount_to_sell * (10 ** token_decimals))
-        
-        logger.info(f"Attempting to sell {amount_to_sell} {token_symbol}")
-        
-        # Get quote from Jupiter
-        quote_url = f"{global_jupiter_api_url}/quote"
-        quote_params = {
-            'inputMint': str(token_pubkey),
-            'outputMint': str(sol_mint),
-            'amount': amount_token_raw,
-            'slippageBps': global_slippage_bps
-        }
-        
-        async with aiohttp.ClientSession() as session:
-            # Get quote
-            async with session.get(quote_url, params=quote_params) as response:
-                if response.status != 200:
-                    logger.error(f"Jupiter quote API error: {response.status}")
-                    error_text = await response.text()
-                    logger.error(f"Error response: {error_text}")
-                    return None
-                
-                quote_data = await response.json()
-                expected_sol_amount = int(quote_data['outAmount'])
-                expected_sol_amount_float = expected_sol_amount / 1_000_000_000
-                logger.info(f"Expected SOL amount: {expected_sol_amount_float:.6f} SOL")
+
+    async def sell_token_solana(self, token_mint_address: str, amount_to_sell: float, 
+                               wallet_token_account: str) -> Optional[Dict[str, Any]]:
+        """Sell token using Jupiter swap"""
+        try:
+            logger.info(f"🔄 Initiating sell for token: {token_mint_address}")
+            
+            # Convert amount to proper decimals
+            amount_lamports = int(amount_to_sell * 1_000_000)  # Assuming 6 decimals
+            
+            # Get quote from Jupiter
+            quote = await self._get_jupiter_quote(
+                input_mint=token_mint_address,
+                output_mint="So11111111111111111111111111111111111111112",  # WSOL
+                amount=amount_lamports,
+                swap_mode="ExactIn"
+            )
+            
+            if not quote:
+                logger.error("Failed to get Jupiter sell quote")
+                return None
             
             # Get swap transaction
-            swap_url = f"{global_jupiter_api_url}/swap"
-            swap_data = {
-                'quoteResponse': quote_data,
-                'userPublicKey': str(wallet_keypair.pubkey()),
-                'wrapAndUnwrapSol': True,
-                'computeUnitPriceMicroLamports': 'auto'
+            swap_tx = await self._get_jupiter_swap_transaction(quote)
+            if not swap_tx:
+                logger.error("Failed to get sell swap transaction")
+                return None
+            
+            # Execute transaction
+            tx_signature = await self._execute_transaction(swap_tx)
+            if not tx_signature:
+                logger.error("Failed to execute sell transaction")
+                return None
+            
+            # Calculate results
+            output_sol = int(quote['outAmount']) / 1_000_000_000  # Convert lamports to SOL
+            
+            result = {
+                'token_mint_address': token_mint_address,
+                'sell_price_sol': output_sol / amount_to_sell if amount_to_sell > 0 else 0,
+                'amount_sold_token': amount_to_sell,
+                'sol_received': output_sol,
+                'sell_tx_signature': tx_signature
             }
             
-            async with session.post(swap_url, json=swap_data) as response:
-                if response.status != 200:
-                    logger.error(f"Jupiter swap API error: {response.status}")
-                    error_text = await response.text()
-                    logger.error(f"Error response: {error_text}")
-                    return None
-                
-                swap_response = await response.json()
-                
-                if 'swapTransaction' not in swap_response:
-                    logger.error("No swapTransaction in response")
-                    return None
-                
-                # Process similar to buy_token_solana
-                transaction_bytes = base64.b64decode(swap_response['swapTransaction'])
-                transaction = Transaction.deserialize(transaction_bytes)
-                transaction.sign(wallet_keypair)
-                
-                # Send transaction
-                logger.info(f"Sending sell transaction for {token_symbol}...")
-                tx_response = await rpc_client.send_transaction(
-                    transaction,
-                    commitment=Confirmed,
-                    skip_preflight=False,
-                    max_retries=3
-                )
-                
-                if tx_response.value:
-                    tx_signature = str(tx_response.value)
-                    logger.info(f"✅ Sell transaction successful: {tx_signature}")
-                    
-                    # Calculate sell price in SOL
-                    sell_price_sol = expected_sol_amount_float / amount_to_sell if amount_to_sell > 0 else 0
-                    
-                    return {
-                        'token_mint_address': token_address,
-                        'token_name': token_name,
-                        'token_symbol': token_symbol,
-                        'sell_price_sol': sell_price_sol,
-                        'amount_sold_token': amount_to_sell,
-                        'amount_received_sol': expected_sol_amount_float,
-                        'sell_tx_signature': tx_signature,
-                        'explorer_url': f"https://solscan.io/tx/{tx_signature}"
-                    }
-                else:
-                    logger.error("Sell transaction failed")
-                    return None
-    
-    except Exception as e:
-        logger.error(f"Error in sell_token_solana: {e}", exc_info=True)
-        return None
-
-# Utility functions
-def get_config_info() -> Dict[str, Any]:
-    """
-    Get current configuration information
-    """
-    global wallet_keypair, global_amount_to_buy_sol, global_slippage_bps, global_jupiter_api_url
-    
-    return {
-        'wallet_address': str(wallet_keypair.pubkey()) if wallet_keypair else None,
-        'amount_to_buy_sol': global_amount_to_buy_sol,
-        'slippage_bps': global_slippage_bps,
-        'jupiter_api_url': global_jupiter_api_url,
-        'is_initialized': all([rpc_client, wallet_keypair, global_amount_to_buy_sol, global_slippage_bps, global_jupiter_api_url])
-    }
-
-async def test_connection() -> bool:
-    """
-    Test RPC connection and wallet
-    """
-    global rpc_client, wallet_keypair
-    
-    if not rpc_client or not wallet_keypair:
-        logger.error("Service not initialized")
-        return False
-    
-    try:
-        # Test RPC connection
-        response = await rpc_client.get_health()
-        logger.info("✅ RPC connection successful")
-        
-        # Test wallet balance
-        balance = await get_wallet_balance()
-        if balance is not None:
-            logger.info(f"✅ Wallet accessible, balance: {balance:.6f} SOL")
-            return True
-        else:
-            logger.error("❌ Could not access wallet")
-            return False
+            logger.info(f"✅ Sell successful: {result}")
+            return result
             
-    except Exception as e:
-        logger.error(f"❌ Connection test failed: {e}")
-        return False
+        except Exception as e:
+            logger.error(f"❌ Error selling token: {e}")
+            return None
 
-# Example usage
-async def main():
-    """
-    Example usage of the Solana service
-    """
-    try:
-        # Initialize from environment variables
-        init_solana_config_from_env()
-        
-        # Test connection
-        if not await test_connection():
-            logger.error("Connection test failed")
-            return
-        
-        # Show configuration
-        config = get_config_info()
-        logger.info(f"Configuration: {config}")
-        
-        # Example: Buy a token (replace with actual token address)
-        # token_address = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"  # USDC example
-        # result = await buy_token_solana(token_address)
-        # if result:
-        #     logger.info(f"Buy successful: {result}")
-        
-    except Exception as e:
-        logger.error(f"Error in main: {e}")
+    async def _get_jupiter_quote(self, input_mint: str, output_mint: str, 
+                                amount: int, swap_mode: str = "ExactIn") -> Optional[Dict]:
+        """Get quote from Jupiter API"""
+        try:
+            async with aiohttp.ClientSession() as session:
+                url = f"{self.jupiter_api_url}/quote"
+                params = {
+                    'inputMint': input_mint,
+                    'outputMint': output_mint,
+                    'amount': amount,
+                    'slippageBps': self.slippage_bps,
+                    'swapMode': swap_mode
+                }
+                
+                async with session.get(url, params=params) as response:
+                    if response.status == 200:
+                        return await response.json()
+                    else:
+                        logger.error(f"Jupiter quote error: {response.status}")
+                        return None
+                        
+        except Exception as e:
+            logger.error(f"Error getting Jupiter quote: {e}")
+            return None
 
-if __name__ == "__main__":
-    asyncio.run(main())
+    async def _get_jupiter_swap_transaction(self, quote: Dict) -> Optional[str]:
+        """Get swap transaction from Jupiter API"""
+        try:
+            async with aiohttp.ClientSession() as session:
+                url = f"{self.jupiter_api_url}/swap"
+                data = {
+                    'quoteResponse': quote,
+                    'userPublicKey': str(self.keypair.public_key),
+                    'wrapAndUnwrapSol': True
+                }
+                
+                async with session.post(url, json=data) as response:
+                    if response.status == 200:
+                        result = await response.json()
+                        return result.get('swapTransaction')
+                    else:
+                        logger.error(f"Jupiter swap error: {response.status}")
+                        return None
+                        
+        except Exception as e:
+            logger.error(f"Error getting Jupiter swap transaction: {e}")
+            return None
+
+    async def _execute_transaction(self, transaction_base64: str) -> Optional[str]:
+        """Execute transaction on Solana network"""
+        try:
+            # Decode transaction
+            transaction_bytes = base64.b64decode(transaction_base64)
+            transaction = Transaction.deserialize(transaction_bytes)
+            
+            # Sign transaction
+            transaction.sign(self.keypair)
+            
+            # Send transaction
+            response = await self.rpc_client.send_transaction(transaction)
+            
+            if response.value:
+                tx_signature = str(response.value)
+                logger.info(f"✅ Transaction sent: {tx_signature}")
+                
+                # Wait for confirmation
+                await asyncio.sleep(2)
+                confirmation = await self.rpc_client.confirm_transaction(response.value)
+                
+                if confirmation.value[0].confirmation_status:
+                    logger.info(f"✅ Transaction confirmed: {tx_signature}")
+                    return tx_signature
+                else:
+                    logger.error(f"❌ Transaction not confirmed: {tx_signature}")
+                    return None
+            else:
+                logger.error("❌ Failed to send transaction")
+                return None
+                
+        except Exception as e:
+            logger.error(f"❌ Error executing transaction: {e}")
+            return None
+
+# Global instance
+solana_service_instance = SolanaService()
+
+# Module-level functions for backward compatibility
+def init_solana_config_from_env():
+    return solana_service_instance.init_solana_config_from_env()
+
+async def get_token_price_sol(token_mint):
+    return await solana_service_instance.get_token_price_sol(token_mint)
+
+async def buy_token_solana(token_mint_address):
+    return await solana_service_instance.buy_token_solana(token_mint_address)
+
+async def sell_token_solana(token_mint_address, amount_to_sell, wallet_token_account):
+    return await solana_service_instance.sell_token_solana(token_mint_address, amount_to_sell, wallet_token_account)
