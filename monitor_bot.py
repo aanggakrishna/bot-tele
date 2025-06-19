@@ -71,46 +71,46 @@ class TelegramMonitorBot:
             logger.error(f"❌ Error loading entity details: {e}")
     
     async def send_notification(self, ca_data, source_info, message_text):
-    """Send notification to owner and configured user"""
-    try:
-        # Get CA data
-        platform = ca_data['platform'].upper()
-        address = ca_data['address']
-        
-        # Create detailed message for owner and saved messages
-        detailed_message = f"🚨 **{platform} CA DETECTED!**\n\n"
-        detailed_message += f"🔗 `{address}`\n\n"
-        detailed_message += f"📊 **Source:** {source_info}\n"
-        detailed_message += f"🕒 **Time:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
-        
-        # Add snippet of original message (truncate if too long)
-        snippet = message_text.strip()
-        if len(snippet) > 300:
-            snippet = snippet[:297] + "..."
-        detailed_message += f"📝 **Message:**\n{snippet}"
-        
-        # Send detailed message to owner
-        await self.client.send_message(config.OWNER_ID, detailed_message)
-        
-        # Send only CA to configured user (TO_USER_ID) if different from owner
-        if config.TO_USER_ID and config.TO_USER_ID != config.OWNER_ID:
-            try:
-                # Simple message with just the CA
-                simple_message = f"{address}"
-                await self.client.send_message(config.TO_USER_ID, simple_message)
-                logger.info(f"📨 CA only sent to TO_USER_ID: {config.TO_USER_ID}")
-            except Exception as e:
-                logger.error(f"❌ Failed to send to TO_USER_ID: {e}")
-        
-        # Save detailed message to "Saved Messages"
-        await self.client.send_message('me', detailed_message)
-        
-        logger.info(f"📨 Notification sent for {platform} CA: {address[:8]}...")
-        
-    except Exception as e:
-        logger.error(f"❌ Failed to send notification: {e}")
-        import traceback
-        logger.error(f"Traceback: {traceback.format_exc()}")
+        """Send notification to owner and configured user"""
+        try:
+            # Get CA data
+            platform = ca_data['platform'].upper()
+            address = ca_data['address']
+            
+            # Create detailed message for owner and saved messages
+            detailed_message = f"🚨 **{platform} CA DETECTED!**\n\n"
+            detailed_message += f"🔗 `{address}`\n\n"
+            detailed_message += f"📊 **Source:** {source_info}\n"
+            detailed_message += f"🕒 **Time:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+            
+            # Add snippet of original message (truncate if too long)
+            snippet = message_text.strip()
+            if len(snippet) > 300:
+                snippet = snippet[:297] + "..."
+            detailed_message += f"📝 **Message:**\n{snippet}"
+            
+            # Send detailed message to owner
+            await self.client.send_message(config.OWNER_ID, detailed_message)
+            
+            # Send only CA to configured user (TO_USER_ID) if different from owner
+            if config.TO_USER_ID and config.TO_USER_ID != config.OWNER_ID:
+                try:
+                    # Simple message with just the CA
+                    simple_message = f"{address}"
+                    await self.client.send_message(config.TO_USER_ID, simple_message)
+                    logger.info(f"📨 CA only sent to TO_USER_ID: {config.TO_USER_ID}")
+                except Exception as e:
+                    logger.error(f"❌ Failed to send to TO_USER_ID: {e}")
+            
+            # Save detailed message to "Saved Messages"
+            await self.client.send_message('me', detailed_message)
+            
+            logger.info(f"📨 Notification sent for {platform} CA: {address[:8]}...")
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to send notification: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
     
     async def handle_new_channel_message(self, event):
         """Handle new message in monitored channel"""
