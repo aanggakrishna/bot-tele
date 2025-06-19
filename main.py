@@ -158,9 +158,9 @@ class RealTradingBot:
         try:
             logger.info(f"🔄 Processing buy signal: {token_mint}")
             
-            # Check if we already have this token
-            db = next(get_db())
-            existing_trades = get_active_trades(db)
+            # Check if we already have this token - FIX CONTEXT MANAGER
+            with get_db() as db:
+                existing_trades = get_active_trades(db)
             
             for trade in existing_trades:
                 if trade.token_mint_address == token_mint:
@@ -201,16 +201,17 @@ class RealTradingBot:
             # Check if real or mock
             is_real = not buy_result['buy_tx_signature'].startswith('mock_')
             
-            # Save to database
-            trade_id = save_trade(
-                db=db,
-                token_mint_address=token_mint,
-                buy_price_sol=buy_result['buy_price_sol'],
-                amount_bought_token=buy_result['amount_bought_token'],
-                wallet_token_account=buy_result['wallet_token_account'],
-                buy_tx_signature=buy_result['buy_tx_signature'],
-                platform=platform
-            )
+            # Save to database - FIX CONTEXT MANAGER
+            with get_db() as db:
+                trade_id = save_trade(
+                    db=db,
+                    token_mint_address=token_mint,
+                    buy_price_sol=buy_result['buy_price_sol'],
+                    amount_bought_token=buy_result['amount_bought_token'],
+                    wallet_token_account=buy_result['wallet_token_account'],
+                    buy_tx_signature=buy_result['buy_tx_signature'],
+                    platform=platform
+                )
             
             logger.info(f"✅ Trade saved with ID: {trade_id}")
             
@@ -257,8 +258,9 @@ class RealTradingBot:
         
         while True:
             try:
-                db = next(get_db())
-                active_trades = get_active_trades(db)
+                # FIX CONTEXT MANAGER USAGE
+                with get_db() as db:
+                    active_trades = get_active_trades(db)
                 
                 if not active_trades:
                     await asyncio.sleep(30)
@@ -267,15 +269,17 @@ class RealTradingBot:
                 logger.debug(f"📊 Monitoring {len(active_trades)} active trades")
                 
                 for trade in active_trades:
-                    await self.check_sell_conditions(trade, db)
+                    await self.check_sell_conditions(trade)
                 
                 await asyncio.sleep(5)  # Check every 5 seconds
                 
             except Exception as e:
                 logger.error(f"❌ Monitor error: {e}")
+                import traceback
+                logger.error(f"📋 Traceback: {traceback.format_exc()}")
                 await asyncio.sleep(30)
     
-    async def check_sell_conditions(self, trade, db):
+    async def check_sell_conditions(self, trade):
         """Check if trade should be sold"""
         try:
             token_mint = trade.token_mint_address
@@ -306,18 +310,18 @@ class RealTradingBot:
                 sell_reason = f"Stop Loss ({stop_loss*100:.0f}%)"
             
             # Time-based sell (24 hours with <5% movement)
-            elif (datetime.utcnow() - trade.created_at) > timedelta(hours=24):
+            elif trade.created_at and (datetime.utcnow() - trade.created_at) > timedelta(hours=24):
                 if abs(profit_loss_percent) < 0.05:
                     should_sell = True
                     sell_reason = "Time-based (24h, <5% movement)"
             
             if should_sell:
-                await self.execute_sell(trade, sell_reason, current_price, db)
+                await self.execute_sell(trade, sell_reason, current_price)
             
         except Exception as e:
             logger.error(f"❌ Sell condition check error: {e}")
     
-    async def execute_sell(self, trade, reason: str, current_price: float, db):
+    async def execute_sell(self, trade, reason: str, current_price: float):
         """Execute sell order"""
         try:
             logger.warning(f"🔴 EXECUTING SELL: {trade.token_mint_address} - {reason}")
@@ -337,14 +341,15 @@ class RealTradingBot:
             profit_loss_percent = (current_price - trade.buy_price_sol) / trade.buy_price_sol
             is_real = not sell_result['sell_tx_signature'].startswith('mock_')
             
-            # Update database
-            status = "sold_profit" if profit_loss_percent > 0 else "sold_loss"
-            update_trade_status(
-                db, trade.id,
-                status=status,
-                sell_price_sol=sell_result['sell_price_sol'],
-                sell_tx_signature=sell_result['sell_tx_signature']
-            )
+            # Update database - FIX CONTEXT MANAGER
+            with get_db() as db:
+                status = "sold_profit" if profit_loss_percent > 0 else "sold_loss"
+                update_trade_status(
+                    db, trade.id,
+                    status=status,
+                    sell_price_sol=sell_result['sell_price_sol'],
+                    sell_tx_signature=sell_result['sell_tx_signature']
+                )
             
             # Send notification
             await self.send_sell_notification(trade, sell_result, reason, profit_loss_percent, is_real)
@@ -392,8 +397,8 @@ class RealTradingBot:
     async def send_status_report(self, event):
         """Send status report"""
         try:
-            db = next(get_db())
-            active_trades = get_active_trades(db)
+            with get_db() as db:
+                active_trades = get_active_trades(db)
             
             balance = await real_trader.get_wallet_balance()
             
@@ -420,8 +425,8 @@ class RealTradingBot:
     async def send_active_trades(self, event):
         """Send active trades list"""
         try:
-            db = next(get_db())
-            active_trades = get_active_trades(db)
+            with get_db() as db:
+                active_trades = get_active_trades(db)
             
             if not active_trades:
                 await event.reply("📊 No active trades")
