@@ -40,4 +40,35 @@ class Config:
     ENABLE_RAYDIUM = os.getenv('ENABLE_RAYDIUM', 'true').lower() == 'true'
     ENABLE_BIRDEYE = os.getenv('ENABLE_BIRDEYE', 'true').lower() == 'true'
 
-config = Config()
+    _entity_details = None
+    
+    def get_entity_details(self):
+        """Get cached entity details from file"""
+        if self._entity_details is None:
+            try:
+                if os.path.exists('entity_details.json'):
+                    with open('entity_details.json', 'r') as f:
+                        self._entity_details = json.load(f)
+                else:
+                    self._entity_details = {
+                        'groups': {str(id): f"Group {id}" for id in self.MONITOR_GROUPS},
+                        'channels': {str(id): f"Channel {id}" for id in self.MONITOR_CHANNELS}
+                    }
+            except Exception as e:
+                logger.error(f"❌ Error loading entity details: {e}")
+                self._entity_details = {
+                    'groups': {str(id): f"Group {id}" for id in self.MONITOR_GROUPS},
+                    'channels': {str(id): f"Channel {id}" for id in self.MONITOR_CHANNELS}
+                }
+        return self._entity_details
+    
+    def save_entity_details(self, details):
+        """Save entity details to file"""
+        if details:
+            try:
+                with open('entity_details.json', 'w') as f:
+                    json.dump(details, f, indent=2)
+                self._entity_details = details
+            except Exception as e:
+                logger.error(f"❌ Error saving entity details: {e}")
+

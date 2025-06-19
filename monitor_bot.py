@@ -1,9 +1,11 @@
 import asyncio
 import time
 import os
+import json
 from datetime import datetime
 from telethon import TelegramClient, events
 from telethon.tl.types import User, Chat, Channel, Message, MessageService
+from telethon.tl.functions.channels import GetFullChannelRequest
 from loguru import logger
 from config import config
 from ca_detector import CADetector
@@ -21,6 +23,7 @@ class TelegramMonitorBot:
         }
         self.running = False
         self.start_time = datetime.now()
+        self.processed_pins = set()
     
     async def init_client(self):
         """Initialize Telegram client"""
@@ -42,33 +45,38 @@ class TelegramMonitorBot:
             return False
     
     async def load_entity_details(self):
-        """Load entity details (names, etc.)"""
-        try:
-            # Load from config if available
-            self.entity_details = config.get_entity_details()
-            
-            # Update with fresh data
-            for group_id in config.MONITOR_GROUPS:
-                try:
-                    group = await self.client.get_entity(group_id)
-                    self.entity_details['groups'][str(group_id)] = getattr(group, 'title', f"Group {group_id}")
-                    logger.info(f"✅ Loaded group: {self.entity_details['groups'][str(group_id)]} ({group_id})")
-                except Exception as e:
-                    logger.warning(f"⚠️ Could not load group {group_id}: {e}")
-            
-            for channel_id in config.MONITOR_CHANNELS:
-                try:
-                    channel = await self.client.get_entity(channel_id)
-                    self.entity_details['channels'][str(channel_id)] = getattr(channel, 'title', f"Channel {channel_id}")
-                    logger.info(f"✅ Loaded channel: {self.entity_details['channels'][str(channel_id)]} ({channel_id})")
-                except Exception as e:
-                    logger.warning(f"⚠️ Could not load channel {channel_id}: {e}")
-            
-            # Save updated details
-            config.save_entity_details(self.entity_details)
-            
-        except Exception as e:
-            logger.error(f"❌ Error loading entity details: {e}")
+    """Load entity details (names, etc.)"""
+    try:
+        # Load from config if available
+        self.entity_details = config.get_entity_details()
+        
+        # Update with fresh data
+        for group_id in config.MONITOR_GROUPS:
+            try:
+                group = await self.client.get_entity(group_id)
+                self.entity_details['groups'][str(group_id)] = getattr(group, 'title', f"Group {group_id}")
+                logger.info(f"✅ Loaded group: {self.entity_details['groups'][str(group_id)]} ({group_id})")
+            except Exception as e:
+                logger.warning(f"⚠️ Could not load group {group_id}: {e}")
+        
+        for channel_id in config.MONITOR_CHANNELS:
+            try:
+                channel = await self.client.get_entity(channel_id)
+                self.entity_details['channels'][str(channel_id)] = getattr(channel, 'title', f"Channel {channel_id}")
+                logger.info(f"✅ Loaded channel: {self.entity_details['channels'][str(channel_id)]} ({channel_id})")
+            except Exception as e:
+                logger.warning(f"⚠️ Could not load channel {channel_id}: {e}")
+        
+        # Save updated details
+        config.save_entity_details(self.entity_details)
+        
+    except Exception as e:
+        logger.error(f"❌ Error loading entity details: {e}")
+        # Initialize with default values if failed
+        self.entity_details = {
+            'groups': {str(id): f"Group {id}" for id in config.MONITOR_GROUPS},
+            'channels': {str(id): f"Channel {id}" for id in config.MONITOR_CHANNELS}
+        }
     
     async def send_notification(self, ca_data, source_info, message_text):
         """Send notification to owner and configured user"""
@@ -148,48 +156,41 @@ class TelegramMonitorBot:
             logger.error(f"❌ Error handling channel message: {e}")
     
     async def handle_pinned_message(self, event):
-        """Handle pinned message in monitored group"""
-        try:
-            # Check if event is pin event
-            if not isinstance(event.message, MessageService):
-                return
+    """Handle pinned message in monitored group"""
+    try:
+        # Check if message is valid
+        if not event.message:
+            return
+        
+        message = event.message
+        
+        # Get group details
+        group_id = str(event.chat_id)
+        group_name = self.entity_details['groups'].get(group_id, f"Group {group_id}")
+        
+        # Extract message text
+        message_text = message.text or message.message or ""
+        if not message_text and message.caption:
+            message_text = message.caption
             
-            # Check if action is pin
-            if not hasattr(event.message.action, 'message') or not event.message.action.message:
-                return
-                
-            # Get group details
-            group_id = str(event.chat_id)
-            group_name = self.entity_details['groups'].get(group_id, f"Group {group_id}")
-            
-            # Get the pinned message
-            pinned_msg_id = event.message.action.message.id
-            pinned_msg = await self.client.get_messages(event.chat_id, ids=pinned_msg_id)
-            
-            if not pinned_msg:
-                return
-            
-            # Extract message text
-            message_text = pinned_msg.text or pinned_msg.message or ""
-            if not message_text and pinned_msg.caption:
-                message_text = pinned_msg.caption
-                
-            # Skip empty messages
-            if not message_text:
-                return
-            
-            logger.info(f"📌 Pinned message in {group_name} ({group_id})")
-            
-            # Process message to detect CAs
-            source_info = f"{group_name} (Pinned)"
-            ca_results = self.detector.process_message(message_text, source_info)
-            
-            # Send notifications for each CA
-            for ca_data in ca_results:
-                await self.send_notification(ca_data, source_info, message_text)
-            
-        except Exception as e:
-            logger.error(f"❌ Error handling pinned message: {e}")
+        # Skip empty messages
+        if not message_text:
+            return
+        
+        logger.info(f"📌 Pinned message in {group_name} ({group_id})")
+        
+        # Process message to detect CAs
+        source_info = f"{group_name} (Pinned)"
+        ca_results = self.detector.process_message(message_text, source_info)
+        
+        # Send notifications for each CA
+        for ca_data in ca_results:
+            await self.send_notification(ca_data, source_info, message_text)
+        
+    except Exception as e:
+        logger.error(f"❌ Error handling pinned message: {e}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
     
     async def heartbeat(self):
         """Send heartbeat to terminal"""
@@ -225,22 +226,117 @@ class TelegramMonitorBot:
                 await asyncio.sleep(10)
     
     async def setup_handlers(self):
-        """Setup event handlers"""
+    """Setup event handlers"""
+    try:
+        # Monitor new messages in channels
+        @self.client.on(events.NewMessage(chats=config.MONITOR_CHANNELS))
+        async def channel_handler(event):
+            await self.handle_new_channel_message(event)
+        
+        # Method 1: Watch for pin notifications using ChatAction
+        # Note: Requires recent Telethon version
         try:
-            # Monitor new messages in channels
-            @self.client.on(events.NewMessage(chats=config.MONITOR_CHANNELS))
-            async def channel_handler(event):
-                await self.handle_new_channel_message(event)
-            
-            # Monitor pin events in groups
-            @self.client.on(events.ChatAction(chats=config.MONITOR_GROUPS, func=lambda e: e.action.__class__.__name__ == "MessagePinned"))
-            async def pin_handler(event):
-                await self.handle_pinned_message(event)
-            
-            logger.success("✅ Event handlers registered")
-            
+            @self.client.on(events.ChatAction(chats=config.MONITOR_GROUPS))
+            async def action_handler(event):
+                if hasattr(event, 'action') and hasattr(event.action, 'message'):
+                    # This is likely a pin event
+                    try:
+                        pinned_msg_id = event.action.message.id
+                        pinned_msg = await self.client.get_messages(event.chat_id, ids=pinned_msg_id)
+                        if pinned_msg:
+                            await self.handle_pinned_message_by_id(event.chat_id, pinned_msg)
+                    except Exception as e:
+                        logger.error(f"❌ Error in action handler: {e}")
         except Exception as e:
-            logger.error(f"❌ Failed to setup handlers: {e}")
+            logger.warning(f"⚠️ ChatAction handler setup failed: {e}")
+        
+        # Method 2: Check message pinned status in new & edited messages
+        @self.client.on(events.NewMessage(chats=config.MONITOR_GROUPS))
+        async def new_message_handler(event):
+            if hasattr(event.message, 'pinned') and event.message.pinned:
+                await self.handle_pinned_message(event)
+        
+        @self.client.on(events.MessageEdited(chats=config.MONITOR_GROUPS))
+        async def edit_handler(event):
+            if hasattr(event.message, 'pinned') and event.message.pinned:
+                await self.handle_pinned_message(event)
+        
+        # Method 3: Periodically check pinned messages
+        self.check_pins_task = asyncio.create_task(self.periodic_pin_check())
+        
+        logger.success("✅ Event handlers registered")
+        
+    except Exception as e:
+        logger.error(f"❌ Failed to setup handlers: {e}")
+
+# Add new method for periodic pin checking
+async def periodic_pin_check(self):
+    """Periodically check pinned messages in all monitored groups"""
+    while self.running:
+        try:
+            for group_id in config.MONITOR_GROUPS:
+                try:
+                    # Get the chat
+                    chat = await self.client.get_entity(group_id)
+                    
+                    # Get full chat to access pinned message
+                    full_chat = await self.client(GetFullChannelRequest(channel=chat))
+                    
+                    # Check if there is a pinned message
+                    if hasattr(full_chat, 'full_chat') and full_chat.full_chat.pinned_msg_id:
+                        pinned_id = full_chat.full_chat.pinned_msg_id
+                        pinned_msg = await self.client.get_messages(group_id, ids=pinned_id)
+                        if pinned_msg:
+                            await self.handle_pinned_message_by_id(group_id, pinned_msg)
+                except Exception as e:
+                    logger.debug(f"⚠️ Error checking pins in {group_id}: {e}")
+            
+            # Wait before next check
+            await asyncio.sleep(300)  # Check every 5 minutes
+            
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.error(f"❌ Error in periodic pin check: {e}")
+            await asyncio.sleep(60)
+
+# Add helper method to handle pinned messages by ID
+async def handle_pinned_message_by_id(self, chat_id, message):
+    """Handle pinned message using direct message object"""
+    try:
+        # Skip if already processed (add message ID tracking)
+        message_id = message.id
+        if message_id in self.processed_pins:
+            return
+            
+        # Mark as processed
+        self.processed_pins.add(message_id)
+        
+        # Get group details
+        group_id = str(chat_id)
+        group_name = self.entity_details['groups'].get(group_id, f"Group {group_id}")
+        
+        # Extract message text
+        message_text = message.text or message.message or ""
+        if not message_text and message.caption:
+            message_text = message.caption
+            
+        # Skip empty messages
+        if not message_text:
+            return
+        
+        logger.info(f"📌 Pinned message in {group_name} ({group_id})")
+        
+        # Process message to detect CAs
+        source_info = f"{group_name} (Pinned)"
+        ca_results = self.detector.process_message(message_text, source_info)
+        
+        # Send notifications for each CA
+        for ca_data in ca_results:
+            await self.send_notification(ca_data, source_info, message_text)
+        
+    except Exception as e:
+        logger.error(f"❌ Error handling pinned message by ID: {e}")
     
     async def start_monitoring(self):
         """Start monitoring channels and groups"""
