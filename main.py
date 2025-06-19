@@ -61,13 +61,19 @@ async def group_message_handler(event):
         group_id = event.chat_id
         group_name = f"Group {group_id}"
 
+        logger.info(f"🔔 New message in {group_name} ({group_id})")
+        logger.info(f"   Message Type: {type(event.message).__name__}")
+        logger.info(f"   Message ID: {event.message.id if event.message else 'None'}")
+
         # Check if the message is a service message (e.g., pin action)
-        if isinstance(event.message, MessageService) and hasattr(event.message.action, "message"):
+        if isinstance(event.message, MessageService):
             logger.info(f"🔧 Service message detected in {group_name} ({group_id})")
-            pinned_msg_id = event.message.action.message.id
-            pinned_msg = await client.get_messages(group_id, ids=pinned_msg_id)
-            if pinned_msg:
-                await process_pinned_message(pinned_msg, group_id, group_name)
+            if hasattr(event.message.action, "message"):
+                pinned_msg_id = event.message.action.message.id
+                logger.info(f"   Pinned Message ID: {pinned_msg_id}")
+                pinned_msg = await client.get_messages(group_id, ids=pinned_msg_id)
+                if pinned_msg:
+                    await process_pinned_message(pinned_msg, group_id, group_name)
         else:
             # Check if the message is pinned
             if hasattr(event.message, "pinned") and event.message.pinned:
