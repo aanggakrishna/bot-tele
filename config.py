@@ -39,15 +39,23 @@ class Config:
     # Database
     DATABASE_PATH = "trading_bot.db"
     
+    # Safety Features
+    MOCK_MODE_ON_ERRORS = os.getenv('MOCK_MODE_ON_ERRORS', 'true').lower() == 'true'
+    MAX_RETRIES = int(os.getenv('MAX_RETRIES', '3'))
+    
     @classmethod
     def validate(cls):
         """Validate configuration"""
-        required = ['API_ID', 'API_HASH', 'OWNER_ID', 'SOLANA_PRIVATE_KEY_BASE58']
+        required = ['API_ID', 'API_HASH', 'OWNER_ID']
         missing = [field for field in required if not getattr(cls, field, None)]
         
         if missing:
             logger.error(f"❌ Missing required config: {missing}")
             return False
+        
+        # Warn if no trading key
+        if not cls.SOLANA_PRIVATE_KEY_BASE58 and not cls.PRIVATE_KEY_PATH:
+            logger.warning("⚠️ No Solana private key configured - will run in observation mode")
         
         logger.info("✅ Configuration validated")
         return True
