@@ -318,7 +318,7 @@ class SolanaTrader:
             logger.error(f"❌ Swap request error: {e}")
         return None
     
-    sync def _execute_transaction_safe(self, transaction_b64: str) -> Optional[str]:
+    async def _execute_transaction_safe(self, transaction_b64: str) -> Optional[str]:
         """Execute transaction with better error handling"""
         try:
             logger.info("🔄 Processing transaction...")
