@@ -4,6 +4,8 @@ import os
 from datetime import datetime
 from telethon import TelegramClient, events
 from telethon.tl.types import MessageService, MessageActionPinMessage
+from telethon.tl.types import UpdatePinnedMessage
+
 import logging
 from dotenv import load_dotenv
 
@@ -65,7 +67,40 @@ async def detect_and_forward_ca(event):
 
         # Kirim hanya CA ke TO_USER
         await client.send_message(TO_USER_ID, ca_list)
+@client.on(events.Raw)
+async def on_raw_update(update):
+    if isinstance(update, UpdatePinnedMessage):
+        try:
+            chat_id = update.peer.channel_id if hasattr(update.peer, 'channel_id') else update.peer.chat_id
+            full_chat_id = -1000000000000 + chat_id  # Format ID lengkap
 
+            if full_chat_id not in MONITOR_GROUPS:
+                return  # Skip jika grup tidak dimonitor
+
+            # Ambil isi pinned message
+            pinned_msg_id = update.message_id
+            msg = await client.get_messages(full_chat_id, ids=pinned_msg_id)
+
+            if msg:
+                sender = await msg.get_sender()
+                chat = await client.get_entity(full_chat_id)
+                chat_title = getattr(chat, 'title', 'Unknown')
+                sender_name = sender.username or sender.first_name or "Unknown"
+                text = msg.message or "(no text)"
+
+                print("===================================")
+                print(f"📌 Pinned message in: {chat_title} ({full_chat_id})")
+                print(f"👤 Sender           : {sender_name}")
+                print(f"📝 Message          : {text}")
+                print("===================================")
+
+                await detect_and_forward_ca(msg)
+            else:
+                print(f"❌ Failed to fetch pinned message in chat {full_chat_id}")
+
+        except Exception as e:
+            print(f"❌ Error in raw pinned handler: {e}")
+            logging.error(f"❌ Error in raw pinned handler: {e}")
 # Handler untuk pesan baru di channel
 @client.on(events.NewMessage(chats=MONITOR_CHANNELS))
 async def handler_new_channel_message(event):
