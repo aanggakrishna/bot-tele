@@ -15,6 +15,7 @@ try:
     from solana.transaction import Transaction
     from solders.keypair import Keypair
     from solders.pubkey import Pubkey
+    from solders.transaction import VersionedTransaction
     SOLANA_AVAILABLE = True
 except ImportError as e:
     logger.error(f"❌ Install: pip install solana==0.30.2 solders==0.18.1")
@@ -195,6 +196,8 @@ class SolanaTrader:
             
         except Exception as e:
             logger.error(f"❌ Buy error: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
             return None
     
     async def _execute_jupiter_buy(self, token_mint: str, buy_amount_sol: float, slippage_bps: int) -> Optional[Dict]:
@@ -211,19 +214,22 @@ class SolanaTrader:
             )
             
             if not quote:
+                logger.error("❌ Could not get Jupiter quote")
                 return None
             
             expected_tokens = int(quote.get('outAmount', 0))
             logger.info(f"✅ Quote: {expected_tokens:,} tokens for {buy_amount_sol} SOL")
             
             # Get swap transaction
-            swap_tx = await self._get_jupiter_swap_transaction(quote)
-            if not swap_tx:
+            swap_tx_data = await self._get_jupiter_swap_transaction(quote)
+            if not swap_tx_data:
+                logger.error("❌ Could not get swap transaction")
                 return None
             
             # Execute transaction
-            tx_signature = await self._execute_transaction(swap_tx)
+            tx_signature = await self._execute_transaction(swap_tx_data)
             if not tx_signature:
+                logger.error("❌ Could not execute transaction")
                 return None
             
             # Calculate effective price
@@ -240,6 +246,8 @@ class SolanaTrader:
             
         except Exception as e:
             logger.error(f"❌ Jupiter buy error: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
             return None
     
     async def _get_jupiter_quote(self, input_mint: str, output_mint: str, amount: int, slippage_bps: int) -> Optional[Dict]:
@@ -253,12 +261,20 @@ class SolanaTrader:
                 'slippageBps': str(slippage_bps)
             }
             
+            logger.info(f"🔍 Getting quote: {params}")
+            
             async with aiohttp.ClientSession() as session:
                 async with session.get(url, params=params, timeout=15) as response:
                     if response.status == 200:
                         data = await response.json()
                         if 'outAmount' in data and int(data['outAmount']) > 0:
+                            logger.info(f"✅ Quote received: {data['outAmount']} tokens")
                             return data
+                        else:
+                            logger.error(f"❌ Invalid quote response: {data}")
+                    else:
+                        logger.error(f"❌ Quote request failed: {response.status}")
+                        
         except Exception as e:
             logger.error(f"❌ Quote error: {e}")
         return None
@@ -270,15 +286,26 @@ class SolanaTrader:
             payload = {
                 'quoteResponse': quote,
                 'userPublicKey': str(self.keypair.pubkey()),
-                'wrapAndUnwrapSol': True
+                'wrapAndUnwrapSol': True,
+                'dynamicComputeUnitLimit': True,
+                'prioritizationFeeLamports': 'auto'
             }
+            
+            logger.info(f"🔍 Getting swap transaction...")
             
             async with aiohttp.ClientSession() as session:
                 async with session.post(url, json=payload, timeout=20) as response:
                     if response.status == 200:
                         data = await response.json()
                         if 'swapTransaction' in data:
+                            logger.info(f"✅ Swap transaction received")
                             return data['swapTransaction']
+                        else:
+                            logger.error(f"❌ No swap transaction in response: {data}")
+                    else:
+                        text = await response.text()
+                        logger.error(f"❌ Swap request failed: {response.status} - {text}")
+                        
         except Exception as e:
             logger.error(f"❌ Swap request error: {e}")
         return None
@@ -286,33 +313,70 @@ class SolanaTrader:
     async def _execute_transaction(self, transaction_b64: str) -> Optional[str]:
         """Execute transaction on Solana"""
         try:
+            logger.info("🔄 Deserializing transaction...")
+            
+            # Decode base64
             transaction_bytes = base64.b64decode(transaction_b64)
-            transaction = Transaction.deserialize(transaction_bytes)
-            transaction.sign([self.keypair])
             
-            response = await self.client.send_transaction(transaction)
+            # Try to deserialize as VersionedTransaction first
+            try:
+                versioned_tx = VersionedTransaction.from_bytes(transaction_bytes)
+                logger.info("✅ Deserialized as VersionedTransaction")
+                
+                # Sign the transaction - FIXED: Pass keypair directly, not in list
+                versioned_tx.sign([self.keypair])
+                logger.info("✅ Transaction signed")
+                
+                # Send transaction
+                logger.info("📤 Sending transaction...")
+                response = await self.client.send_transaction(versioned_tx)
+                
+            except Exception as ve:
+                logger.info(f"⚠️ VersionedTransaction failed: {ve}, trying Legacy Transaction")
+                
+                # Try legacy transaction
+                legacy_tx = Transaction.deserialize(transaction_bytes)
+                logger.info("✅ Deserialized as Legacy Transaction")
+                
+                # Sign the transaction - FIXED: Pass keypair directly, not in list
+                legacy_tx.sign(self.keypair)
+                logger.info("✅ Transaction signed")
+                
+                # Send transaction
+                logger.info("📤 Sending transaction...")
+                response = await self.client.send_transaction(legacy_tx)
             
+            # Handle response
             if hasattr(response, 'value'):
                 tx_signature = str(response.value)
                 logger.info(f"📤 Transaction sent: {tx_signature}")
+                
+                # Wait for confirmation
+                logger.info("⏳ Waiting for confirmation...")
+                await asyncio.sleep(5)
+                
                 return tx_signature
+            else:
+                logger.error(f"❌ Unexpected response format: {response}")
                 
         except Exception as e:
             logger.error(f"❌ Transaction error: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
         return None
     
     async def sell_token(self, token_mint: str, amount: float, wallet_account: str) -> Optional[Dict]:
         """Sell token"""
         try:
+            logger.warning(f"🔴 SELL INITIATED: {token_mint}")
+            
             if not self.enable_real_trading:
+                logger.warning("🟡 Real trading disabled - using mock")
                 return await self._mock_sell(token_mint)
             
-            # Execute Jupiter sell (implementation similar to buy)
-            price = await self.get_token_price_sol(token_mint)
-            return {
-                'sell_price_sol': price * 1.1,  # Mock profit
-                'sell_tx_signature': f'sell_{int(time.time())}'
-            }
+            # For now, use mock sell until we implement full sell logic
+            logger.warning("🟡 Real sell not implemented yet - using mock")
+            return await self._mock_sell(token_mint)
             
         except Exception as e:
             logger.error(f"❌ Sell error: {e}")
@@ -322,6 +386,8 @@ class SolanaTrader:
         """Mock buy for testing"""
         price = await self.get_token_price_sol(token_mint) or 0.000001
         amount_tokens = buy_amount_sol / price
+        
+        logger.info(f"🟡 MOCK BUY: {amount_tokens:,.0f} tokens at {price:.12f} SOL each")
         
         return {
             'token_mint_address': token_mint,
@@ -335,10 +401,48 @@ class SolanaTrader:
     async def _mock_sell(self, token_mint: str) -> Dict:
         """Mock sell for testing"""
         price = await self.get_token_price_sol(token_mint) or 0.000001
+        # Simulate 10% profit for mock
+        sell_price = price * 1.1
+        
+        logger.info(f"🟡 MOCK SELL: at {sell_price:.12f} SOL")
+        
         return {
-            'sell_price_sol': price * 1.1,
+            'sell_price_sol': sell_price,
             'sell_tx_signature': f'mock_sell_{int(time.time())}'
         }
+    
+    async def close(self):
+        """Close connections"""
+        try:
+            if self.client:
+                await self.client.close()
+                logger.info("✅ Solana client closed")
+        except Exception as e:
+            logger.error(f"❌ Close error: {e}")
 
 # Global instance
 trader = SolanaTrader()
+
+# Test function
+async def test_trader():
+    """Test trader functionality"""
+    logger.info("🧪 Testing Solana trader...")
+    
+    if not trader.init_from_config():
+        logger.error("❌ Trader initialization failed")
+        return
+    
+    # Test balance
+    balance = await trader.get_wallet_balance()
+    logger.info(f"💰 Balance: {balance} SOL")
+    
+    # Test price check
+    test_token = "So11111111111111111111111111111111111111112"  # SOL
+    price = await trader.get_token_price_sol(test_token)
+    logger.info(f"💰 SOL price: {price} SOL")
+    
+    await trader.close()
+    logger.info("✅ Test completed")
+
+if __name__ == "__main__":
+    asyncio.run(test_trader())
