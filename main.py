@@ -53,9 +53,30 @@ async def handler_new_channel_message(event):
     await detect_and_forward_ca(event)
 
 # --- Event Handler untuk pin message di GROUP ---
-@client.on(events.MessagePinned(chats=MONITOR_GROUPS))
-async def handler_pin_group(event):
-    await detect_and_forward_ca(event)
+@client.on(events.NewMessage(chats=MONITOR_GROUPS))
+async def handler_service_message(event):
+    """Handle service messages in monitored groups"""
+    try:
+        group_id = event.chat_id
+        group_name = f"Group {group_id}"
+
+        # Periksa apakah pesan adalah service message
+        if isinstance(event.message, events.MessageService):
+            logging.info(f"🔧 Service message detected in {group_name} ({group_id})")
+
+            # Periksa apakah service message terkait dengan pinned message
+            if hasattr(event.message.action, "message"):
+                pinned_msg_id = event.message.action.message.id
+                logging.info(f"📌 Pinned message ID: {pinned_msg_id}")
+
+                # Ambil pesan yang di-pin
+                pinned_msg = await client.get_messages(group_id, ids=pinned_msg_id)
+                if pinned_msg:
+                    await detect_and_forward_ca(pinned_msg)
+        else:
+            logging.info(f"📝 Regular message in {group_name} ({group_id})")
+    except Exception as e:
+        logging.error(f"❌ Error in handler_service_message: {e}")
 
 # --- Heartbeat setiap 2 detik ---
 async def heartbeat():
