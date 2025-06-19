@@ -2,7 +2,7 @@ import sqlite3
 from datetime import datetime
 from typing import List, Optional
 from dataclasses import dataclass
-from contextlib import contextmanager
+from contextmanager import contextmanager
 from loguru import logger
 from config import config
 
@@ -31,6 +31,18 @@ def get_table_columns(cursor, table_name: str) -> List[str]:
         return columns
     except:
         return []
+
+def safe_get_row_value(row, column: str, default=None):
+    """Safely get value from sqlite3.Row object"""
+    try:
+        if hasattr(row, column):
+            return getattr(row, column)
+        elif hasattr(row, 'keys') and column in row.keys():
+            return row[column]
+        else:
+            return default
+    except (KeyError, AttributeError):
+        return default
 
 def init_db():
     """Initialize database with safe migration"""
@@ -208,7 +220,7 @@ def save_trade(db, token_mint_address: str, buy_price_sol: float, amount_bought_
         raise
 
 def get_active_trades(db) -> List[Trade]:
-    """Get all active trades"""
+    """Get all active trades - FIXED sqlite3.Row handling"""
     try:
         cursor = db.cursor()
         
@@ -225,38 +237,44 @@ def get_active_trades(db) -> List[Trade]:
         trades = []
         
         for row in rows:
-            # Safely get values with defaults
+            # Safely get values with defaults - FIXED for sqlite3.Row
             created_at = None
-            if 'created_at' in existing_columns and row['created_at']:
-                try:
-                    created_at = datetime.fromisoformat(row['created_at'].replace('Z', '+00:00'))
-                except:
-                    created_at = None
+            if 'created_at' in existing_columns:
+                created_at_str = safe_get_row_value(row, 'created_at')
+                if created_at_str:
+                    try:
+                        created_at = datetime.fromisoformat(created_at_str.replace('Z', '+00:00'))
+                    except:
+                        created_at = None
             
             sold_at = None
-            if 'sold_at' in existing_columns and row['sold_at']:
-                try:
-                    sold_at = datetime.fromisoformat(row['sold_at'].replace('Z', '+00:00'))
-                except:
-                    sold_at = None
+            if 'sold_at' in existing_columns:
+                sold_at_str = safe_get_row_value(row, 'sold_at')
+                if sold_at_str:
+                    try:
+                        sold_at = datetime.fromisoformat(sold_at_str.replace('Z', '+00:00'))
+                    except:
+                        sold_at = None
             
+            # Create Trade object with safe value extraction
             trade = Trade(
-                id=row['id'],
-                token_mint_address=row['token_mint_address'],
-                platform=row.get('platform', 'unknown'),
-                buy_price_sol=row['buy_price_sol'],
-                amount_bought_token=row['amount_bought_token'],
-                wallet_token_account=row['wallet_token_account'],
-                buy_tx_signature=row['buy_tx_signature'],
-                sell_price_sol=row.get('sell_price_sol'),
-                sell_tx_signature=row.get('sell_tx_signature'),
-                status=row.get('status', 'active'),
-                pnl_percent=row.get('pnl_percent'),
+                id=safe_get_row_value(row, 'id'),
+                token_mint_address=safe_get_row_value(row, 'token_mint_address', ''),
+                platform=safe_get_row_value(row, 'platform', 'unknown'),
+                buy_price_sol=safe_get_row_value(row, 'buy_price_sol', 0.0),
+                amount_bought_token=safe_get_row_value(row, 'amount_bought_token', 0.0),
+                wallet_token_account=safe_get_row_value(row, 'wallet_token_account', ''),
+                buy_tx_signature=safe_get_row_value(row, 'buy_tx_signature', ''),
+                sell_price_sol=safe_get_row_value(row, 'sell_price_sol'),
+                sell_tx_signature=safe_get_row_value(row, 'sell_tx_signature'),
+                status=safe_get_row_value(row, 'status', 'active'),
+                pnl_percent=safe_get_row_value(row, 'pnl_percent'),
                 created_at=created_at,
                 sold_at=sold_at
             )
             trades.append(trade)
         
+        logger.info(f"📊 Retrieved {len(trades)} active trades")
         return trades
         
     except Exception as e:
@@ -302,42 +320,57 @@ def get_trade_stats(db) -> dict:
     try:
         cursor = db.cursor()
         
+        # Use safe row access for stats
+        stats = {}
+        
         # Total trades
         cursor.execute("SELECT COUNT(*) as total FROM trades")
-        total_trades = cursor.fetchone()['total']
+        row = cursor.fetchone()
+        stats['total_trades'] = safe_get_row_value(row, 'total', 0)
         
         # Active trades
         cursor.execute("SELECT COUNT(*) as active FROM trades WHERE status = 'active' OR status IS NULL")
-        active_trades = cursor.fetchone()['active']
+        row = cursor.fetchone()
+        stats['active_trades'] = safe_get_row_value(row, 'active', 0)
         
         # Profitable trades
         cursor.execute("SELECT COUNT(*) as profitable FROM trades WHERE status = 'sold_profit'")
-        profitable_trades = cursor.fetchone()['profitable']
+        row = cursor.fetchone()
+        stats['profitable_trades'] = safe_get_row_value(row, 'profitable', 0)
         
         # Loss trades
         cursor.execute("SELECT COUNT(*) as loss FROM trades WHERE status = 'sold_loss'")
-        loss_trades = cursor.fetchone()['loss']
+        row = cursor.fetchone()
+        stats['loss_trades'] = safe_get_row_value(row, 'loss', 0)
         
         # Check if pnl_percent column exists
         existing_columns = get_table_columns(cursor, 'trades')
         avg_pnl = 0
         if 'pnl_percent' in existing_columns:
             cursor.execute("SELECT AVG(pnl_percent) as avg_pnl FROM trades WHERE pnl_percent IS NOT NULL")
-            result = cursor.fetchone()
-            avg_pnl = result['avg_pnl'] or 0
+            row = cursor.fetchone()
+            stats['avg_pnl'] = safe_get_row_value(row, 'avg_pnl', 0) or 0
+        else:
+            stats['avg_pnl'] = 0
         
-        return {
-            'total_trades': total_trades,
-            'active_trades': active_trades,
-            'profitable_trades': profitable_trades,
-            'loss_trades': loss_trades,
-            'avg_pnl': avg_pnl,
-            'win_rate': (profitable_trades / (profitable_trades + loss_trades) * 100) if (profitable_trades + loss_trades) > 0 else 0
-        }
+        # Calculate win rate
+        profitable = stats['profitable_trades']
+        losses = stats['loss_trades']
+        total_closed = profitable + losses
+        stats['win_rate'] = (profitable / total_closed * 100) if total_closed > 0 else 0
+        
+        return stats
         
     except Exception as e:
         logger.error(f"❌ Get trade stats error: {e}")
-        return {}
+        return {
+            'total_trades': 0,
+            'active_trades': 0,
+            'profitable_trades': 0,
+            'loss_trades': 0,
+            'avg_pnl': 0,
+            'win_rate': 0
+        }
 
 def reset_database():
     """Reset database - USE WITH CAUTION!"""
@@ -365,7 +398,8 @@ if __name__ == "__main__":
         with get_db() as db:
             cursor = db.cursor()
             cursor.execute("SELECT COUNT(*) as count FROM trades")
-            count = cursor.fetchone()['count']
+            row = cursor.fetchone()
+            count = safe_get_row_value(row, 'count', 0)
             logger.info(f"📊 Current trades in database: {count}")
             
             # Test stats
