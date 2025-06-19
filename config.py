@@ -9,7 +9,7 @@ class Config:
     API_ID = int(os.getenv('API_ID'))
     API_HASH = os.getenv('API_HASH')
     OWNER_ID = int(os.getenv('OWNER_ID'))
-     TO_USER_ID = int(os.getenv('TO_USER_ID', '0'))
+    TO_USER_ID = int(os.getenv('TO_USER_ID', '0'))
     
     # Monitor Groups and Channels
     MONITOR_GROUPS = [int(x.strip()) for x in os.getenv('MONITOR_GROUPS', '').split(',') if x.strip()]
