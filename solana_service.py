@@ -416,39 +416,46 @@ class RealSolanaTrader:
         return None
     
     async def _get_jupiter_swap_transaction(self, quote: Dict) -> Optional[str]:
-        """Get Jupiter swap transaction - FIXED PAYLOAD FORMAT"""
-        try:
-            url = f"{self.jupiter_api}/swap"
-            
-            # 🔧 FIXED PAYLOAD - Updated prioritizationFeeLamports format
-            payload = {
-                'quoteResponse': quote,
-                'userPublicKey': str(self.keypair.pubkey()),
-                'wrapAndUnwrapSol': True,
-                'computeUnitPriceMicroLamports': 1000,  # Fixed value instead of 'auto'
-                'prioritizationFeeLamports': 10000,    # 🔧 FIXED: Use integer instead of object
-                'asLegacyTransaction': False,
-                'useSharedAccounts': True
-            }
-            
-            logger.debug(f"🔗 Jupiter swap request: {url}")
-            logger.debug(f"📊 Payload keys: {list(payload.keys())}")
-            
-            async with aiohttp.ClientSession() as session:
-                async with session.post(url, json=payload, timeout=20) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        if 'swapTransaction' in data:
-                            logger.debug("✅ Swap transaction received")
-                            return data['swapTransaction']
+    """Get Jupiter swap transaction - WORKING FORMAT"""
+    try:
+        # Try multiple API versions
+        apis = [
+            'https://quote-api.jup.ag/v6',
+            'https://quote-api.jup.ag/v4',
+            'https://api.jup.ag/v6'
+        ]
+        
+        for api in apis:
+            try:
+                url = f"{api}/swap"
+                
+                # Start with minimal payload
+                payload = {
+                    'quoteResponse': quote,
+                    'userPublicKey': str(self.keypair.pubkey())
+                }
+                
+                logger.debug(f"🔗 Trying Jupiter API: {api}")
+                
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(url, json=payload, timeout=20) as response:
+                        if response.status == 200:
+                            data = await response.json()
+                            if 'swapTransaction' in data:
+                                logger.info(f"✅ Success with API: {api}")
+                                return data['swapTransaction']
                         else:
-                            logger.error("❌ No swapTransaction in response")
-                            logger.debug(f"Response keys: {list(data.keys()) if isinstance(data, dict) else 'Not dict'}")
-                    else:
-                        error_text = await response.text()
-                        logger.error(f"❌ Jupiter swap error {response.status}: {error_text}")
-        except Exception as e:
-            logger.error(f"❌ Swap request error: {e}")
+                            error_text = await response.text()
+                            logger.debug(f"❌ {api} failed: {response.status} - {error_text[:100]}")
+            except Exception as e:
+                logger.debug(f"❌ {api} exception: {e}")
+                continue
+        
+        logger.error("❌ All Jupiter APIs failed")
+        return None
+        
+    except Exception as e:
+        logger.error(f"❌ Swap request error: {e}")
         return None
     
     async def _execute_transaction(self, transaction_b64: str) -> Optional[str]:
