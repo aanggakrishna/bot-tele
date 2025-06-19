@@ -30,7 +30,7 @@ client = TelegramClient(
 OWNER_ID = int(os.getenv('OWNER_ID'))
 MONITOR_GROUPS = [int(x.strip()) for x in os.getenv('MONITOR_GROUPS', '').split(',') if x.strip()]
 MONITOR_CHANNELS = [int(x.strip()) for x in os.getenv('MONITOR_CHANNELS', '').split(',') if x.strip()]
-MAX_PURCHASES = int(os.getenv('MAX_PURCHASES_ALLOWED', '3'))
+MAX_PURCHASES = int(os.getenv('MAX_PURCHASES_ALLOWED', '2'))
 
 class RealTradingBot:
     def __init__(self):
@@ -269,7 +269,7 @@ class RealTradingBot:
                 for trade in active_trades:
                     await self.check_sell_conditions(trade, db)
                 
-                await asyncio.sleep(5)  # Check every 5 seconds for responsiveness
+                await asyncio.sleep(5)  # Check every 5 seconds
                 
             except Exception as e:
                 logger.error(f"❌ Monitor error: {e}")
@@ -288,9 +288,9 @@ class RealTradingBot:
             # Calculate profit/loss
             profit_loss_percent = (current_price - trade.buy_price_sol) / trade.buy_price_sol
             
-            # Get settings
-            take_profit = float(os.getenv('TAKE_PROFIT_PERCENT', '3.0'))  # 300%
-            stop_loss = float(os.getenv('STOP_LOSS_PERCENT', '0.4'))     # 40%
+            # Get settings from .env
+            take_profit = float(os.getenv('TAKE_PROFIT_PERCENT', '0.75'))    # 75%
+            stop_loss = float(os.getenv('STOP_LOSS_PERCENT', '0.52'))       # 52%
             
             should_sell = False
             sell_reason = ""
@@ -407,9 +407,9 @@ class RealTradingBot:
 
 🎯 **Settings**:
 • Buy Amount: {os.getenv('AMOUNT_TO_BUY_SOL')} SOL
-• Take Profit: {float(os.getenv('TAKE_PROFIT_PERCENT', '3.0'))*100:.0f}%
-• Stop Loss: {float(os.getenv('STOP_LOSS_PERCENT', '0.4'))*100:.0f}%
-• Slippage: {int(os.getenv('SLIPPAGE_BPS', '1500'))/100:.1f}%
+• Take Profit: {float(os.getenv('TAKE_PROFIT_PERCENT', '0.75'))*100:.0f}%
+• Stop Loss: {float(os.getenv('STOP_LOSS_PERCENT', '0.52'))*100:.0f}%
+• Slippage: {int(os.getenv('SLIPPAGE_BPS', '500'))/100:.1f}%
 """
             
             await event.reply(status)
