@@ -147,7 +147,7 @@ class RealSolanaTrader:
         try:
             endpoints = [
                 f"https://api.jup.ag/price/v2?ids={token_mint}",
-                f"{self.jupiter_api}/price?ids={token_mint}&vsToken=So11111111111111111111111111111111111111112"
+                f"https://price.jup.ag/v4/price?ids={token_mint}",
             ]
             
             for endpoint in endpoints:
@@ -272,8 +272,8 @@ class RealSolanaTrader:
                 return None
             
             # Get trading settings
-            buy_amount_sol = float(os.getenv('AMOUNT_TO_BUY_SOL', '0.005'))
-            slippage_bps = int(os.getenv('SLIPPAGE_BPS', '1500'))
+            buy_amount_sol = float(os.getenv('AMOUNT_TO_BUY_SOL', '0.01'))
+            slippage_bps = int(os.getenv('SLIPPAGE_BPS', '500'))
             
             # Safety checks
             if not self.enable_real_trading:
@@ -384,7 +384,7 @@ class RealSolanaTrader:
             return None
     
     async def _get_jupiter_quote(self, input_mint: str, output_mint: str, amount: int, slippage_bps: int) -> Optional[Dict]:
-        """Get Jupiter quote"""
+        """Get Jupiter quote with enhanced error handling"""
         try:
             url = f"{self.jupiter_api}/quote"
             params = {
@@ -396,12 +396,18 @@ class RealSolanaTrader:
                 'asLegacyTransaction': 'false'
             }
             
+            logger.debug(f"🔗 Jupiter quote request: {url}")
+            logger.debug(f"📊 Params: {params}")
+            
             async with aiohttp.ClientSession() as session:
                 async with session.get(url, params=params, timeout=15) as response:
                     if response.status == 200:
                         data = await response.json()
                         if 'outAmount' in data and int(data['outAmount']) > 0:
+                            logger.debug(f"✅ Quote received: {data.get('outAmount')} tokens")
                             return data
+                        else:
+                            logger.error("❌ Invalid quote: no output amount")
                     else:
                         error_text = await response.text()
                         logger.error(f"❌ Jupiter quote error {response.status}: {error_text}")
@@ -410,24 +416,34 @@ class RealSolanaTrader:
         return None
     
     async def _get_jupiter_swap_transaction(self, quote: Dict) -> Optional[str]:
-        """Get Jupiter swap transaction"""
+        """Get Jupiter swap transaction - FIXED PAYLOAD FORMAT"""
         try:
             url = f"{self.jupiter_api}/swap"
+            
+            # 🔧 FIXED PAYLOAD - Updated prioritizationFeeLamports format
             payload = {
                 'quoteResponse': quote,
                 'userPublicKey': str(self.keypair.pubkey()),
                 'wrapAndUnwrapSol': True,
-                'computeUnitPriceMicroLamports': 'auto',
-                'prioritizationFeeLamports': {
-                    'auto': {}
-                }
+                'computeUnitPriceMicroLamports': 1000,  # Fixed value instead of 'auto'
+                'prioritizationFeeLamports': 10000,    # 🔧 FIXED: Use integer instead of object
+                'asLegacyTransaction': False,
+                'useSharedAccounts': True
             }
+            
+            logger.debug(f"🔗 Jupiter swap request: {url}")
+            logger.debug(f"📊 Payload keys: {list(payload.keys())}")
             
             async with aiohttp.ClientSession() as session:
                 async with session.post(url, json=payload, timeout=20) as response:
                     if response.status == 200:
                         data = await response.json()
-                        return data.get('swapTransaction')
+                        if 'swapTransaction' in data:
+                            logger.debug("✅ Swap transaction received")
+                            return data['swapTransaction']
+                        else:
+                            logger.error("❌ No swapTransaction in response")
+                            logger.debug(f"Response keys: {list(data.keys()) if isinstance(data, dict) else 'Not dict'}")
                     else:
                         error_text = await response.text()
                         logger.error(f"❌ Jupiter swap error {response.status}: {error_text}")
@@ -443,10 +459,16 @@ class RealSolanaTrader:
             transaction = Transaction.deserialize(transaction_bytes)
             transaction.sign([self.keypair])
             
-            # Send transaction
+            logger.info("📤 Sending transaction to blockchain...")
+            
+            # Send transaction with better settings
             response = await self.client.send_transaction(
                 transaction,
-                opts={"skip_confirmation": False, "preflight_commitment": "confirmed"}
+                opts={
+                    "skip_confirmation": False, 
+                    "preflight_commitment": "confirmed",
+                    "max_retries": 3
+                }
             )
             
             if hasattr(response, 'value'):
@@ -457,28 +479,41 @@ class RealSolanaTrader:
                 confirmed = await self._wait_for_confirmation(tx_signature)
                 if confirmed:
                     return tx_signature
+                else:
+                    logger.error("❌ Transaction not confirmed")
+            else:
+                logger.error("❌ No transaction signature returned")
             
         except Exception as e:
             logger.error(f"❌ Transaction error: {e}")
+            import traceback
+            logger.error(f"📋 Full traceback: {traceback.format_exc()}")
         return None
     
     async def _wait_for_confirmation(self, tx_signature: str, max_retries: int = 30) -> bool:
         """Wait for transaction confirmation"""
         try:
+            logger.info(f"⏳ Waiting for confirmation: {tx_signature}")
+            
             for i in range(max_retries):
-                response = await self.client.get_signature_statuses([tx_signature])
-                if response.value and response.value[0]:
-                    status = response.value[0]
-                    if status.confirmation_status:
-                        logger.info(f"✅ Transaction confirmed: {tx_signature}")
-                        return True
-                    elif status.err:
-                        logger.error(f"❌ Transaction failed: {status.err}")
-                        return False
-                
-                await asyncio.sleep(2)
-                if i % 5 == 0:
-                    logger.info(f"⏳ Waiting for confirmation... ({i+1}/{max_retries})")
+                try:
+                    response = await self.client.get_signature_statuses([tx_signature])
+                    if response.value and response.value[0]:
+                        status = response.value[0]
+                        if status.confirmation_status:
+                            logger.info(f"✅ Transaction confirmed: {tx_signature}")
+                            return True
+                        elif status.err:
+                            logger.error(f"❌ Transaction failed: {status.err}")
+                            return False
+                    
+                    await asyncio.sleep(2)
+                    if i % 5 == 0:
+                        logger.info(f"⏳ Still waiting... ({i+1}/{max_retries})")
+                        
+                except Exception as e:
+                    logger.debug(f"Confirmation check error: {e}")
+                    await asyncio.sleep(2)
             
             logger.warning(f"⚠️ Confirmation timeout: {tx_signature}")
             return False
@@ -521,7 +556,7 @@ class RealSolanaTrader:
     async def _execute_jupiter_sell(self, token_mint: str, amount: int) -> Optional[Dict]:
         """Execute Jupiter sell"""
         try:
-            slippage_bps = int(os.getenv('SLIPPAGE_BPS', '1500'))
+            slippage_bps = int(os.getenv('SLIPPAGE_BPS', '500'))
             
             # Get sell quote
             quote = await self._get_jupiter_quote(
@@ -532,16 +567,19 @@ class RealSolanaTrader:
             )
             
             if not quote:
+                logger.error("❌ Jupiter sell quote failed")
                 return None
             
             # Get swap transaction
             swap_tx = await self._get_jupiter_swap_transaction(quote)
             if not swap_tx:
+                logger.error("❌ Jupiter sell swap transaction failed")
                 return None
             
             # Execute
             tx_signature = await self._execute_transaction(swap_tx)
             if not tx_signature:
+                logger.error("❌ Jupiter sell transaction execution failed")
                 return None
             
             # Calculate SOL received
