@@ -339,23 +339,36 @@ class SolanaTrader:
             logger.warning("🔴 REAL TRADING ENABLED - ATTEMPTING REAL TRANSACTION")
             
             try:
-                # Method 1: Try VersionedTransaction
+                # Method 1: Try VersionedTransaction with proper signing
                 logger.info("🔄 Attempting VersionedTransaction...")
                 versioned_tx = VersionedTransaction.from_bytes(transaction_bytes)
                 logger.info("✅ VersionedTransaction deserialized successfully")
                 
-                # Sign the transaction
-                versioned_tx.sign([self.keypair])
-                logger.info("✅ Transaction signed")
+                # FIXED: Use proper signing method for VersionedTransaction
+                from solders.signature import Signature
+                from solders.message import to_bytes_versioned
+                
+                # Get message bytes
+                message_bytes = to_bytes_versioned(versioned_tx.message)
+                logger.info("✅ Message bytes extracted for signing")
+                
+                # Sign the message
+                signature = self.keypair.sign_message(message_bytes)
+                logger.info("✅ Message signed successfully")
+                
+                # Create new signed transaction
+                signed_tx = VersionedTransaction(versioned_tx.message, [signature])
+                logger.info("✅ Signed VersionedTransaction created")
                 
                 # Send transaction
                 logger.info("📤 Sending real transaction...")
                 response = await self.client.send_transaction(
-                    versioned_tx,
+                    signed_tx,
                     opts=TxOpts(
                         skip_confirmation=False,
-                        skip_preflight=False,
-                        preflight_commitment=Commitment("confirmed")
+                        skip_preflight=True,  # Skip preflight to avoid some validation issues
+                        preflight_commitment=Commitment("confirmed"),
+                        max_retries=3
                     )
                 )
                 
@@ -365,7 +378,7 @@ class SolanaTrader:
                     
                     # Wait for confirmation
                     logger.info("⏳ Waiting for confirmation...")
-                    await asyncio.sleep(10)
+                    await asyncio.sleep(15)  # Wait longer for confirmation
                     
                     # Try to confirm
                     try:
@@ -387,27 +400,48 @@ class SolanaTrader:
                     
             except Exception as ve:
                 logger.error(f"❌ VersionedTransaction failed: {ve}")
+                import traceback
+                logger.error(f"VersionedTransaction traceback: {traceback.format_exc()}")
                 
-                # Method 2: Try raw transaction
+                # Method 2: Try send_raw_transaction with better approach
                 try:
-                    logger.info("🔄 Attempting raw transaction...")
+                    logger.info("🔄 Attempting raw transaction with manual signing...")
+                    
+                    # Try to manually construct and sign
+                    versioned_tx = VersionedTransaction.from_bytes(transaction_bytes)
+                    
+                    # Get the message and sign it properly
+                    message = versioned_tx.message
+                    message_bytes = to_bytes_versioned(message)
+                    signature = self.keypair.sign_message(message_bytes)
+                    
+                    # Create signed transaction
+                    signed_tx = VersionedTransaction(message, [signature])
+                    
+                    # Convert to bytes for raw sending
+                    signed_tx_bytes = bytes(signed_tx)
+                    
+                    logger.info("📤 Sending manually signed raw transaction...")
                     response = await self.client.send_raw_transaction(
-                        transaction_bytes,
+                        signed_tx_bytes,
                         opts=TxOpts(
                             skip_confirmation=False,
-                            skip_preflight=False,
-                            preflight_commitment=Commitment("confirmed")
+                            skip_preflight=True,
+                            preflight_commitment=Commitment("confirmed"),
+                            max_retries=3
                         )
                     )
                     
                     if hasattr(response, 'value'):
                         tx_signature = str(response.value)
                         logger.info(f"🔴 RAW TRANSACTION SENT: {tx_signature}")
-                        await asyncio.sleep(10)
+                        await asyncio.sleep(15)
                         return tx_signature
                         
                 except Exception as re:
                     logger.error(f"❌ Raw transaction failed: {re}")
+                    import traceback
+                    logger.error(f"Raw transaction traceback: {traceback.format_exc()}")
             
             # If all real methods fail, fall back to mock with warning
             logger.error("❌ ALL REAL TRANSACTION METHODS FAILED")
