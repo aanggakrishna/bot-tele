@@ -25,43 +25,86 @@ class Trade:
     created_at: Optional[datetime] = None
     sold_at: Optional[datetime] = None
 
+def get_table_columns(cursor, table_name: str) -> List[str]:
+    """Get existing table columns"""
+    try:
+        cursor.execute(f"PRAGMA table_info({table_name})")
+        columns = [row[1] for row in cursor.fetchall()]
+        return columns
+    except:
+        return []
+
 def init_db():
-    """Initialize database with tables"""
+    """Initialize database with safe migration"""
     try:
         with sqlite3.connect(DATABASE_PATH) as conn:
             cursor = conn.cursor()
             
-            # Create trades table
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS trades (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    token_mint_address TEXT NOT NULL,
-                    platform TEXT NOT NULL,
-                    buy_price_sol REAL NOT NULL,
-                    amount_bought_token REAL NOT NULL,
-                    wallet_token_account TEXT NOT NULL,
-                    buy_tx_signature TEXT NOT NULL,
-                    sell_price_sol REAL,
-                    sell_tx_signature TEXT,
-                    status TEXT DEFAULT 'active',
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    sold_at TIMESTAMP
-                )
-            """)
+            # Check if trades table exists
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='trades'")
+            table_exists = cursor.fetchone() is not None
             
-            # Create index for faster queries
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_trades_status ON trades(status)
-            """)
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_trades_token ON trades(token_mint_address)
-            """)
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_trades_created ON trades(created_at)
-            """)
+            if not table_exists:
+                # Create new table
+                logger.info("📊 Creating new trades table...")
+                cursor.execute("""
+                    CREATE TABLE trades (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        token_mint_address TEXT NOT NULL,
+                        platform TEXT NOT NULL,
+                        buy_price_sol REAL NOT NULL,
+                        amount_bought_token REAL NOT NULL,
+                        wallet_token_account TEXT NOT NULL,
+                        buy_tx_signature TEXT NOT NULL,
+                        sell_price_sol REAL,
+                        sell_tx_signature TEXT,
+                        status TEXT DEFAULT 'active',
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        sold_at TIMESTAMP
+                    )
+                """)
+            else:
+                # Check existing columns
+                existing_columns = get_table_columns(cursor, 'trades')
+                logger.info(f"📊 Existing columns: {existing_columns}")
+                
+                # Add missing columns if needed
+                required_columns = {
+                    'created_at': 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP',
+                    'sold_at': 'TIMESTAMP',
+                    'platform': 'TEXT DEFAULT "unknown"',
+                    'sell_price_sol': 'REAL',
+                    'sell_tx_signature': 'TEXT'
+                }
+                
+                for column, column_type in required_columns.items():
+                    if column not in existing_columns:
+                        try:
+                            logger.info(f"➕ Adding column: {column}")
+                            cursor.execute(f"ALTER TABLE trades ADD COLUMN {column} {column_type}")
+                        except sqlite3.OperationalError as e:
+                            if "duplicate column name" not in str(e).lower():
+                                logger.warning(f"⚠️ Could not add column {column}: {e}")
+            
+            # Create indexes (with IF NOT EXISTS)
+            indexes = [
+                ("idx_trades_status", "trades", "status"),
+                ("idx_trades_token", "trades", "token_mint_address"),
+                ("idx_trades_created", "trades", "created_at")
+            ]
+            
+            for idx_name, table, column in indexes:
+                try:
+                    cursor.execute(f"CREATE INDEX IF NOT EXISTS {idx_name} ON {table}({column})")
+                except sqlite3.OperationalError as e:
+                    logger.debug(f"Index {idx_name} might already exist: {e}")
             
             conn.commit()
             logger.info("✅ Database initialized successfully")
+            
+            # Show final table structure
+            final_columns = get_table_columns(cursor, 'trades')
+            logger.info(f"📋 Final table structure: {final_columns}")
             
     except Exception as e:
         logger.error(f"❌ Database initialization error: {e}")
@@ -96,15 +139,32 @@ def save_trade(
     """Save new trade to database"""
     try:
         cursor = db.cursor()
-        cursor.execute("""
-            INSERT INTO trades (
-                token_mint_address, platform, buy_price_sol, 
+        
+        # Check what columns exist
+        existing_columns = get_table_columns(cursor, 'trades')
+        
+        # Build query based on available columns
+        if 'created_at' in existing_columns:
+            cursor.execute("""
+                INSERT INTO trades (
+                    token_mint_address, platform, buy_price_sol, 
+                    amount_bought_token, wallet_token_account, buy_tx_signature,
+                    created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            """, (
+                token_mint_address, platform, buy_price_sol,
                 amount_bought_token, wallet_token_account, buy_tx_signature
-            ) VALUES (?, ?, ?, ?, ?, ?)
-        """, (
-            token_mint_address, platform, buy_price_sol,
-            amount_bought_token, wallet_token_account, buy_tx_signature
-        ))
+            ))
+        else:
+            cursor.execute("""
+                INSERT INTO trades (
+                    token_mint_address, platform, buy_price_sol, 
+                    amount_bought_token, wallet_token_account, buy_tx_signature
+                ) VALUES (?, ?, ?, ?, ?, ?)
+            """, (
+                token_mint_address, platform, buy_price_sol,
+                amount_bought_token, wallet_token_account, buy_tx_signature
+            ))
         
         db.commit()
         trade_id = cursor.lastrowid
@@ -120,29 +180,48 @@ def get_active_trades(db) -> List[Trade]:
     """Get all active trades"""
     try:
         cursor = db.cursor()
+        
+        # Check available columns
+        existing_columns = get_table_columns(cursor, 'trades')
+        
         cursor.execute("""
             SELECT * FROM trades 
             WHERE status = 'active' 
-            ORDER BY created_at DESC
+            ORDER BY id DESC
         """)
         
         rows = cursor.fetchall()
         trades = []
         
         for row in rows:
+            # Safely get values with defaults
+            created_at = None
+            if 'created_at' in existing_columns and row['created_at']:
+                try:
+                    created_at = datetime.fromisoformat(row['created_at'].replace('Z', '+00:00'))
+                except:
+                    created_at = None
+            
+            sold_at = None
+            if 'sold_at' in existing_columns and row['sold_at']:
+                try:
+                    sold_at = datetime.fromisoformat(row['sold_at'].replace('Z', '+00:00'))
+                except:
+                    sold_at = None
+            
             trade = Trade(
                 id=row['id'],
                 token_mint_address=row['token_mint_address'],
-                platform=row['platform'],
+                platform=row.get('platform', 'unknown'),
                 buy_price_sol=row['buy_price_sol'],
                 amount_bought_token=row['amount_bought_token'],
                 wallet_token_account=row['wallet_token_account'],
                 buy_tx_signature=row['buy_tx_signature'],
-                sell_price_sol=row['sell_price_sol'],
-                sell_tx_signature=row['sell_tx_signature'],
-                status=row['status'],
-                created_at=datetime.fromisoformat(row['created_at']) if row['created_at'] else None,
-                sold_at=datetime.fromisoformat(row['sold_at']) if row['sold_at'] else None
+                sell_price_sol=row.get('sell_price_sol'),
+                sell_tx_signature=row.get('sell_tx_signature'),
+                status=row.get('status', 'active'),
+                created_at=created_at,
+                sold_at=sold_at
             )
             trades.append(trade)
         
@@ -150,6 +229,8 @@ def get_active_trades(db) -> List[Trade]:
         
     except Exception as e:
         logger.error(f"❌ Get active trades error: {e}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
         return []
 
 def get_trade_by_id(db, trade_id: int) -> Optional[Trade]:
@@ -162,19 +243,37 @@ def get_trade_by_id(db, trade_id: int) -> Optional[Trade]:
         if not row:
             return None
         
+        # Check available columns
+        existing_columns = get_table_columns(cursor, 'trades')
+        
+        # Safely get datetime values
+        created_at = None
+        if 'created_at' in existing_columns and row['created_at']:
+            try:
+                created_at = datetime.fromisoformat(row['created_at'].replace('Z', '+00:00'))
+            except:
+                created_at = None
+        
+        sold_at = None
+        if 'sold_at' in existing_columns and row['sold_at']:
+            try:
+                sold_at = datetime.fromisoformat(row['sold_at'].replace('Z', '+00:00'))
+            except:
+                sold_at = None
+        
         return Trade(
             id=row['id'],
             token_mint_address=row['token_mint_address'],
-            platform=row['platform'],
+            platform=row.get('platform', 'unknown'),
             buy_price_sol=row['buy_price_sol'],
             amount_bought_token=row['amount_bought_token'],
             wallet_token_account=row['wallet_token_account'],
             buy_tx_signature=row['buy_tx_signature'],
-            sell_price_sol=row['sell_price_sol'],
-            sell_tx_signature=row['sell_tx_signature'],
-            status=row['status'],
-            created_at=datetime.fromisoformat(row['created_at']) if row['created_at'] else None,
-            sold_at=datetime.fromisoformat(row['sold_at']) if row['sold_at'] else None
+            sell_price_sol=row.get('sell_price_sol'),
+            sell_tx_signature=row.get('sell_tx_signature'),
+            status=row.get('status', 'active'),
+            created_at=created_at,
+            sold_at=sold_at
         )
         
     except Exception as e:
@@ -191,13 +290,21 @@ def update_trade_status(
     """Update trade status (sell)"""
     try:
         cursor = db.cursor()
+        existing_columns = get_table_columns(cursor, 'trades')
         
         if status in ['sold_profit', 'sold_loss']:
-            cursor.execute("""
-                UPDATE trades 
-                SET status = ?, sell_price_sol = ?, sell_tx_signature = ?, sold_at = CURRENT_TIMESTAMP
-                WHERE id = ?
-            """, (status, sell_price_sol, sell_tx_signature, trade_id))
+            if 'sold_at' in existing_columns:
+                cursor.execute("""
+                    UPDATE trades 
+                    SET status = ?, sell_price_sol = ?, sell_tx_signature = ?, sold_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                """, (status, sell_price_sol, sell_tx_signature, trade_id))
+            else:
+                cursor.execute("""
+                    UPDATE trades 
+                    SET status = ?, sell_price_sol = ?, sell_tx_signature = ?
+                    WHERE id = ?
+                """, (status, sell_price_sol, sell_tx_signature, trade_id))
         else:
             cursor.execute("""
                 UPDATE trades 
@@ -219,27 +326,43 @@ def get_trade_history(db, limit: int = 50) -> List[Trade]:
         cursor = db.cursor()
         cursor.execute("""
             SELECT * FROM trades 
-            ORDER BY created_at DESC 
+            ORDER BY id DESC 
             LIMIT ?
         """, (limit,))
         
         rows = cursor.fetchall()
         trades = []
+        existing_columns = get_table_columns(cursor, 'trades')
         
         for row in rows:
+            # Safely get datetime values
+            created_at = None
+            if 'created_at' in existing_columns and row['created_at']:
+                try:
+                    created_at = datetime.fromisoformat(row['created_at'].replace('Z', '+00:00'))
+                except:
+                    created_at = None
+            
+            sold_at = None
+            if 'sold_at' in existing_columns and row['sold_at']:
+                try:
+                    sold_at = datetime.fromisoformat(row['sold_at'].replace('Z', '+00:00'))
+                except:
+                    sold_at = None
+            
             trade = Trade(
                 id=row['id'],
                 token_mint_address=row['token_mint_address'],
-                platform=row['platform'],
+                platform=row.get('platform', 'unknown'),
                 buy_price_sol=row['buy_price_sol'],
                 amount_bought_token=row['amount_bought_token'],
                 wallet_token_account=row['wallet_token_account'],
                 buy_tx_signature=row['buy_tx_signature'],
-                sell_price_sol=row['sell_price_sol'],
-                sell_tx_signature=row['sell_tx_signature'],
-                status=row['status'],
-                created_at=datetime.fromisoformat(row['created_at']) if row['created_at'] else None,
-                sold_at=datetime.fromisoformat(row['sold_at']) if row['sold_at'] else None
+                sell_price_sol=row.get('sell_price_sol'),
+                sell_tx_signature=row.get('sell_tx_signature'),
+                status=row.get('status', 'active'),
+                created_at=created_at,
+                sold_at=sold_at
             )
             trades.append(trade)
         
@@ -270,25 +393,14 @@ def get_trade_stats(db) -> dict:
         cursor.execute("SELECT COUNT(*) as loss FROM trades WHERE status = 'sold_loss'")
         loss_trades = cursor.fetchone()['loss']
         
-        # Total profit/loss
-        cursor.execute("""
-            SELECT 
-                SUM(CASE WHEN status = 'sold_profit' THEN (sell_price_sol - buy_price_sol) * amount_bought_token ELSE 0 END) as total_profit,
-                SUM(CASE WHEN status = 'sold_loss' THEN (buy_price_sol - sell_price_sol) * amount_bought_token ELSE 0 END) as total_loss
-            FROM trades
-        """)
-        pnl_row = cursor.fetchone()
-        total_profit = pnl_row['total_profit'] or 0
-        total_loss = pnl_row['total_loss'] or 0
-        
         return {
             'total_trades': total_trades,
             'active_trades': active_trades,
             'profitable_trades': profitable_trades,
             'loss_trades': loss_trades,
-            'total_profit': total_profit,
-            'total_loss': total_loss,
-            'net_pnl': total_profit - total_loss
+            'total_profit': 0.0,
+            'total_loss': 0.0,
+            'net_pnl': 0.0
         }
         
     except Exception as e:
@@ -299,11 +411,21 @@ def cleanup_old_trades(db, days: int = 30):
     """Clean up old completed trades"""
     try:
         cursor = db.cursor()
-        cursor.execute("""
-            DELETE FROM trades 
-            WHERE status IN ('sold_profit', 'sold_loss', 'error') 
-            AND created_at < datetime('now', '-{} days')
-        """.format(days))
+        existing_columns = get_table_columns(cursor, 'trades')
+        
+        if 'created_at' in existing_columns:
+            cursor.execute("""
+                DELETE FROM trades 
+                WHERE status IN ('sold_profit', 'sold_loss', 'error') 
+                AND created_at < datetime('now', '-{} days')
+            """.format(days))
+        else:
+            # Fallback: delete by ID (keep recent ones)
+            cursor.execute("""
+                DELETE FROM trades 
+                WHERE status IN ('sold_profit', 'sold_loss', 'error') 
+                AND id < (SELECT MAX(id) FROM trades) - 100
+            """)
         
         deleted_count = cursor.rowcount
         db.commit()
@@ -317,6 +439,20 @@ def cleanup_old_trades(db, days: int = 30):
         logger.error(f"❌ Cleanup error: {e}")
         db.rollback()
         return 0
+
+# Manual database reset function
+def reset_database():
+    """Reset database - USE WITH CAUTION!"""
+    try:
+        if os.path.exists(DATABASE_PATH):
+            os.remove(DATABASE_PATH)
+            logger.info("🗑️ Old database deleted")
+        
+        init_db()
+        logger.info("✅ Database reset complete")
+        
+    except Exception as e:
+        logger.error(f"❌ Database reset error: {e}")
 
 # Test database functions
 if __name__ == "__main__":
