@@ -1,240 +1,236 @@
 import asyncio
-import os
 import re
 from datetime import datetime, timedelta
-from typing import List, Optional
+from typing import List
 from loguru import logger
 from telethon import TelegramClient, events
-from dotenv import load_dotenv
+from telethon.tl.types import UpdatePinnedMessages
 
-# Import our services
-from solana_service import (
-    init_real_trading, buy_token_solana, sell_token_solana, 
-    get_token_price_sol, is_valid_solana_address, real_trader
-)
-from database import (
-    init_db, get_db, save_trade, get_active_trades, 
-    update_trade_status, get_trade_by_id
-)
+from config import config
+from database import init_db, get_db, save_signal, save_trade, get_active_trades, update_trade_status, get_trade_stats
+from solana_service import trader
+from utils import extract_solana_addresses, detect_platform, format_pnl, truncate_address
 
-load_dotenv()
+# Initialize Telegram client
+client = TelegramClient('trading_bot', config.API_ID, config.API_HASH)
 
-# Telegram client
-client = TelegramClient(
-    'trading_bot',
-    int(os.getenv('API_ID')),
-    os.getenv('API_HASH')
-)
-
-# Configuration
-OWNER_ID = int(os.getenv('OWNER_ID'))
-MONITOR_GROUPS = [int(x.strip()) for x in os.getenv('MONITOR_GROUPS', '').split(',') if x.strip()]
-MONITOR_CHANNELS = [int(x.strip()) for x in os.getenv('MONITOR_CHANNELS', '').split(',') if x.strip()]
-MAX_PURCHASES = int(os.getenv('MAX_PURCHASES_ALLOWED', '2'))
-
-class RealTradingBot:
+class TradingBot:
     def __init__(self):
-        self.active_trades = {}
-        self.price_cache = {}
+        self.heartbeat_count = 0
         
     async def start(self):
-        """Start the real trading bot"""
-        logger.info("🚀 Starting Real Trading Bot...")
+        """Start the trading bot"""
+        logger.info("🚀 Starting Solana Trading Bot...")
+        
+        # Validate configuration
+        if not config.validate():
+            logger.error("❌ Configuration validation failed!")
+            return
         
         # Initialize database
         init_db()
         
-        # Initialize real trading
-        success = await init_real_trading()
+        # Initialize Solana trader
+        success = trader.init_from_config()
         if not success:
-            logger.error("❌ Failed to initialize real trading!")
+            logger.error("❌ Failed to initialize Solana trader!")
             return
         
         # Show wallet info
-        if real_trader.keypair:
-            balance = await real_trader.get_wallet_balance()
-            logger.info(f"💎 Wallet: {real_trader.keypair.pubkey()}")
+        if trader.keypair:
+            balance = await trader.get_wallet_balance()
+            logger.info(f"💎 Wallet: {trader.keypair.pubkey()}")
             logger.info(f"💰 Balance: {balance:.6f} SOL")
             
-            if real_trader.enable_real_trading:
+            if trader.enable_real_trading:
                 logger.warning("🔴 REAL TRADING ENABLED - MONEY AT RISK!")
             else:
                 logger.info("🟡 MOCK TRADING MODE")
         
         # Start Telegram client
         await client.start()
-        logger.info("📱 Telegram client started")
+        logger.info("📱 Telegram client connected")
         
-        # Start monitoring task
-        asyncio.create_task(self.monitor_trades())
-        asyncio.create_task(self.heartbeat())  # Add heartbeat task
-        
-        # Setup message handlers
+        # Setup handlers
         self.setup_handlers()
         
+        # Start background tasks
+        asyncio.create_task(self.heartbeat())
+        asyncio.create_task(self.monitor_trades())
+        
         logger.info("✅ Bot is running and monitoring...")
+        logger.info(f"👁️ Monitoring Groups: {config.MONITOR_GROUPS}")
+        logger.info(f"👁️ Monitoring Channels: {config.MONITOR_CHANNELS}")
+        
+        # Run until disconnected
         await client.run_until_disconnected()
-
-    async def heartbeat(self):
-        """Log heartbeat to indicate bot is running"""
-        while True:
-            logger.info("💓 Heartbeat: Bot is running...")
-            await asyncio.sleep(60)  # Log every 60 seconds
     
     def setup_handlers(self):
-        """Setup Telegram message handlers"""
+        """Setup Telegram event handlers"""
         
-        @client.on(events.NewMessage(chats=MONITOR_GROUPS + MONITOR_CHANNELS))
-        async def handle_message(event):
+        # Handle new messages in monitored channels
+        @client.on(events.NewMessage(chats=config.MONITOR_CHANNELS))
+        async def handle_channel_message(event):
             try:
-                message_text = event.raw_text
-                if not message_text:
-                    return
-                
-                logger.debug(f"📨 New message: {message_text[:100]}...")
-                
-                # Detect token addresses
-                tokens = self.extract_token_addresses(message_text)
-                if not tokens:
-                    return
-                
-                # Detect platform
-                platform = self.detect_platform(message_text)
-                
-                # Process each token
-                for token in tokens:
-                    if is_valid_solana_address(token):
-                        logger.info(f"🎯 Token detected: {token} on {platform}")
-                        await self.process_buy_signal(token, platform, message_text)
-                
+                await self.process_message(event, 'channel')
             except Exception as e:
-                logger.error(f"❌ Message handler error: {e}")
+                logger.error(f"❌ Channel message handler error: {e}")
         
-        @client.on(events.NewMessage(pattern='/status', chats=[OWNER_ID]))
+        # Handle pinned messages in monitored groups (using Raw updates)
+        @client.on(events.Raw)
+        async def handle_raw_updates(event):
+            try:
+                if isinstance(event, UpdatePinnedMessages):
+                    # Get the pinned message
+                    chat_id = getattr(event, 'peer', None)
+                    if chat_id and hasattr(chat_id, 'channel_id'):
+                        full_chat_id = -int(f"100{chat_id.channel_id}")
+                        if full_chat_id in config.MONITOR_GROUPS:
+                            # Get the actual message
+                            messages = await client.get_messages(full_chat_id, ids=event.messages)
+                            for message in messages:
+                                if message:
+                                    await self.process_message_content(message.message or "", 'pin', full_chat_id)
+            except Exception as e:
+                logger.error(f"❌ Pin handler error: {e}")
+        
+        # Owner commands
+        @client.on(events.NewMessage(pattern='/status', chats=[config.OWNER_ID]))
         async def handle_status(event):
             await self.send_status_report(event)
         
-        @client.on(events.NewMessage(pattern='/balance', chats=[OWNER_ID]))
+        @client.on(events.NewMessage(pattern='/balance', chats=[config.OWNER_ID]))
         async def handle_balance(event):
-            balance = await real_trader.get_wallet_balance()
-            await event.reply(f"💰 Wallet Balance: {balance:.6f} SOL")
+            balance = await trader.get_wallet_balance()
+            await event.reply(f"💰 **Wallet Balance**: {balance:.6f} SOL")
         
-        @client.on(events.NewMessage(pattern='/trades', chats=[OWNER_ID]))
+        @client.on(events.NewMessage(pattern='/trades', chats=[config.OWNER_ID]))
         async def handle_trades(event):
             await self.send_active_trades(event)
         
-        @client.on(events.MessagePinned(chats=MONITOR_GROUPS))
-        async def handle_pinned_message(event):
-            try:
-                message_text = event.message.raw_text
-                if not message_text:
-                    return
-                
-                logger.debug(f"📌 Pinned message detected: {message_text[:100]}...")
-                
-                # Detect token addresses
-                tokens = self.extract_token_addresses(message_text)
-                if not tokens:
-                    return
-                
-                # Detect platform
-                platform = self.detect_platform(message_text)
-                
-                # Process each token
-                for token in tokens:
-                    if is_valid_solana_address(token):
-                        logger.info(f"🎯 Token detected from pinned message: {token} on {platform}")
-                        await self.process_buy_signal(token, platform, message_text)
-                
-            except Exception as e:
-                logger.error(f"❌ Pinned message handler error: {e}")
-    
-    def extract_token_addresses(self, text: str) -> List[str]:
-        """Extract Solana token addresses from text"""
-        # Multiple patterns for token detection
-        patterns = [
-            r'[A-Za-z0-9]{40,50}',  # General base58 pattern
-            r'[123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz]{44}',  # Specific base58
-            r'Address:\s*([A-Za-z0-9]{40,50})',  # Address: format
-            r'CA:\s*([A-Za-z0-9]{40,50})',  # CA: format
-            r'Token:\s*([A-Za-z0-9]{40,50})',  # Token: format
-        ]
+        @client.on(events.NewMessage(pattern='/stats', chats=[config.OWNER_ID]))
+        async def handle_stats(event):
+            await self.send_trading_stats(event)
         
-        tokens = set()
-        for pattern in patterns:
-            matches = re.findall(pattern, text)
-            for match in matches:
-                if isinstance(match, tuple):
-                    match = match[0]
-                if len(match) >= 40 and is_valid_solana_address(match):
-                    tokens.add(match)
-        
-        return list(tokens)
+        logger.info("✅ Event handlers registered")
     
-    def detect_platform(self, text: str) -> str:
-        """Detect trading platform from message"""
-        text_lower = text.lower()
-        
-        if any(keyword in text_lower for keyword in ['pump.fun', 'pumpfun', 'pump fun']):
-            return 'pumpfun'
-        elif any(keyword in text_lower for keyword in ['moonshot', 'moon shot']):
-            return 'moonshot'
-        elif any(keyword in text_lower for keyword in ['raydium', 'ray']):
-            return 'raydium'
-        elif any(keyword in text_lower for keyword in ['jupiter', 'jup']):
-            return 'jupiter'
-        else:
-            return 'unknown'
-    
-    async def process_buy_signal(self, token_mint: str, platform: str, message: str):
-        """Process buy signal for token"""
+    async def process_message(self, event, source_type: str):
+        """Process incoming message"""
         try:
-            logger.info(f"🔄 Processing buy signal: {token_mint}")
+            message_text = event.raw_text
+            if not message_text or len(message_text) < 20:
+                return
             
-            # Check if we already have this token - FIX CONTEXT MANAGER
+            chat_id = event.chat_id
+            await self.process_message_content(message_text, source_type, chat_id)
+            
+        except Exception as e:
+            logger.error(f"❌ Process message error: {e}")
+    
+    async def process_message_content(self, message_text: str, source_type: str, source_id: int):
+        """Process message content for CA detection"""
+        try:
+            logger.debug(f"📨 {source_type.upper()}: {message_text[:100]}...")
+            
+            # Extract Solana addresses
+            addresses = extract_solana_addresses(message_text)
+            if not addresses:
+                return
+            
+            # Detect platform
+            platform = detect_platform(message_text)
+            
+            # Process each valid address
+            for address in addresses:
+                if trader.is_valid_solana_address(address):
+                    # Check if it's not a common token (SOL, USDC, etc.)
+                    if self.is_excluded_address(address):
+                        continue
+                    
+                    logger.info(f"🎯 CA DETECTED: {truncate_address(address)} on {platform.upper()}")
+                    
+                    # Save signal to database
+                    with get_db() as db:
+                        save_signal(db, address, platform, source_type, source_id, message_text)
+                    
+                    # Send notification to owner
+                    await self.notify_ca_detected(address, platform, source_type, message_text)
+                    
+                    # Process buy signal
+                    await self.process_buy_signal(address, platform, message_text)
+            
+        except Exception as e:
+            logger.error(f"❌ Process message content error: {e}")
+    
+    def is_excluded_address(self, address: str) -> bool:
+        """Check if address should be excluded"""
+        excluded = [
+            'So11111111111111111111111111111111111111112',  # SOL
+            'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',  # USDC
+            'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB',  # USDT
+        ]
+        return address in excluded
+    
+    async def notify_ca_detected(self, token_mint: str, platform: str, source_type: str, message_text: str):
+        """Send CA detected notification to owner"""
+        try:
+            notification = f"""
+🎯 **CA DETECTED**
+
+🪙 **Token**: `{token_mint}`
+🏷️ **Platform**: {platform.upper()}
+📍 **Source**: {source_type.upper()}
+💰 **Price**: Checking...
+
+📝 **Message**:
+{message_text[:300]}...
+"""
+            
+            await client.send_message(config.OWNER_ID, notification)
+            logger.info(f"📤 CA notification sent to owner")
+            
+        except Exception as e:
+            logger.error(f"❌ CA notification error: {e}")
+    
+    async def process_buy_signal(self, token_mint: str, platform: str, message_text: str):
+        """Process buy signal for detected CA"""
+        try:
+            logger.info(f"🔄 Processing buy signal: {truncate_address(token_mint)}")
+            
+            # Check current active trades
             with get_db() as db:
-                existing_trades = get_active_trades(db)
+                active_trades = get_active_trades(db)
             
-            for trade in existing_trades:
+            # Check if already have this token
+            for trade in active_trades:
                 if trade.token_mint_address == token_mint:
-                    logger.info(f"⚠️ Already have active trade for {token_mint}")
+                    logger.info(f"⚠️ Already have active trade for {truncate_address(token_mint)}")
                     return
             
-            # Check max purchases limit
-            if len(existing_trades) >= MAX_PURCHASES:
-                logger.warning(f"⚠️ Max purchases limit reached ({MAX_PURCHASES})")
-                await self.send_dm_to_owner(
-                    f"⚠️ **Max Purchases Limit Reached**\n"
-                    f"🔢 Current: {len(existing_trades)}/{MAX_PURCHASES}\n"
-                    f"🪙 Skipped token: `{token_mint}`"
-                )
+            # Check max purchases limit (2 sessions)
+            if len(active_trades) >= config.MAX_PURCHASES_ALLOWED:
+                logger.warning(f"⚠️ Max purchases limit reached ({config.MAX_PURCHASES_ALLOWED})")
+                await self.notify_max_limit_reached(token_mint)
                 return
             
             # Get token price
-            current_price = await get_token_price_sol(token_mint)
+            current_price = await trader.get_token_price_sol(token_mint)
             if not current_price:
-                logger.error(f"❌ Could not get price for {token_mint}")
+                logger.error(f"❌ Could not get price for {truncate_address(token_mint)}")
                 return
             
             logger.info(f"💰 Token price: {current_price:.12f} SOL")
             
             # Execute buy
-            logger.warning(f"🔴 EXECUTING BUY FOR: {token_mint}")
-            buy_result = await buy_token_solana(token_mint)
+            logger.warning(f"🔴 EXECUTING BUY: {truncate_address(token_mint)}")
+            buy_result = await trader.buy_token(token_mint)
             
             if not buy_result:
-                logger.error(f"❌ Buy failed for {token_mint}")
-                await self.send_dm_to_owner(
-                    f"❌ **Buy Failed**\n"
-                    f"🪙 Token: `{token_mint}`\n"
-                    f"🏷️ Platform: {platform}"
-                )
+                logger.error(f"❌ Buy failed for {truncate_address(token_mint)}")
+                await self.notify_buy_failed(token_mint, platform)
                 return
             
-            # Check if real or mock
-            is_real = not buy_result['buy_tx_signature'].startswith('mock_')
-            
-            # Save to database - FIX CONTEXT MANAGER
+            # Save trade to database
             with get_db() as db:
                 trade_id = save_trade(
                     db=db,
@@ -248,42 +244,74 @@ class RealTradingBot:
             
             logger.info(f"✅ Trade saved with ID: {trade_id}")
             
-            # Send notification
-            await self.send_buy_notification(buy_result, platform, is_real, message)
+            # Send buy notification
+            await self.notify_buy_executed(buy_result, platform, message_text)
             
         except Exception as e:
             logger.error(f"❌ Buy signal processing error: {e}")
-            import traceback
-            logger.error(f"📋 Traceback: {traceback.format_exc()}")
     
-    async def send_buy_notification(self, buy_result: dict, platform: str, is_real: bool, original_message: str):
-        """Send buy notification to owner"""
+    async def notify_max_limit_reached(self, token_mint: str):
+        """Notify when max purchase limit is reached"""
         try:
+            notification = f"""
+⚠️ **MAX PURCHASE LIMIT REACHED**
+
+🔢 **Limit**: {config.MAX_PURCHASES_ALLOWED} active trades
+🪙 **Skipped Token**: `{truncate_address(token_mint)}`
+
+💡 **Action**: Wait for current trades to sell before new purchases.
+"""
+            await client.send_message(config.OWNER_ID, notification)
+        except Exception as e:
+            logger.error(f"❌ Max limit notification error: {e}")
+    
+    async def notify_buy_failed(self, token_mint: str, platform: str):
+        """Notify when buy fails"""
+        try:
+            notification = f"""
+❌ **BUY FAILED**
+
+🪙 **Token**: `{truncate_address(token_mint)}`
+🏷️ **Platform**: {platform.upper()}
+⚠️ **Reason**: Check logs for details
+"""
+            await client.send_message(config.OWNER_ID, notification)
+        except Exception as e:
+            logger.error(f"❌ Buy failed notification error: {e}")
+    
+    async def notify_buy_executed(self, buy_result: dict, platform: str, original_message: str):
+        """Notify when buy is executed"""
+        try:
+            is_real = not buy_result['buy_tx_signature'].startswith('mock_')
             status_emoji = "🔴" if is_real else "🟡"
             status_text = "REAL TRADE" if is_real else "MOCK TRADE"
             
-            # Build explorer URL
+            # Calculate total cost
+            total_cost = buy_result['buy_price_sol'] * buy_result['amount_bought_token']
+            
+            # Explorer URL
             tx_signature = buy_result['buy_tx_signature']
             explorer_url = f"https://solscan.io/tx/{tx_signature}" if is_real else "N/A (Mock)"
             
             notification = f"""
 {status_emoji} **{status_text} - BUY EXECUTED**
 
-🪙 **Token**: `{buy_result['token_mint_address']}`
+🪙 **Token**: `{truncate_address(buy_result['token_mint_address'])}`
 🏷️ **Platform**: {platform.upper()}
-💰 **Buy Price**: {buy_result['buy_price_sol']:.12f} SOL
-📊 **Amount**: {buy_result['amount_bought_token']:,.0f} tokens
-💵 **Total Cost**: {buy_result['buy_price_sol'] * buy_result['amount_bought_token']:.6f} SOL
-🔗 **Transaction**: [View on Solscan]({explorer_url})
+💰 **Price**: {buy_result['buy_price_sol']:.12f} SOL
+📊 **Amount**: {buy_result['amount_bought_token']:,.0f}
+💵 **Total Cost**: {total_cost:.6f} SOL
+🔗 **TX**: [View on Solscan]({explorer_url})
 
 📝 **Original Signal**:
 {original_message[:200]}...
 """
             
-            await self.send_dm_to_owner(notification)
+            await client.send_message(config.OWNER_ID, notification)
+            logger.info(f"📤 Buy notification sent")
             
         except Exception as e:
-            logger.error(f"❌ Notification error: {e}")
+            logger.error(f"❌ Buy notification error: {e}")
     
     async def monitor_trades(self):
         """Monitor active trades for sell conditions"""
@@ -291,7 +319,6 @@ class RealTradingBot:
         
         while True:
             try:
-                # FIX CONTEXT MANAGER USAGE
                 with get_db() as db:
                     active_trades = get_active_trades(db)
                 
@@ -304,157 +331,175 @@ class RealTradingBot:
                 for trade in active_trades:
                     await self.check_sell_conditions(trade)
                 
-                await asyncio.sleep(5)  # Check every 5 seconds
+                await asyncio.sleep(10)  # Check every 10 seconds
                 
             except Exception as e:
-                logger.error(f"❌ Monitor error: {e}")
-                import traceback
-                logger.error(f"📋 Traceback: {traceback.format_exc()}")
+                logger.error(f"❌ Monitor trades error: {e}")
                 await asyncio.sleep(30)
     
     async def check_sell_conditions(self, trade):
         """Check if trade should be sold"""
         try:
-            token_mint = trade.token_mint_address
-            
             # Get current price
-            current_price = await get_token_price_sol(token_mint)
+            current_price = await trader.get_token_price_sol(trade.token_mint_address)
             if not current_price:
                 return
             
-            # Calculate profit/loss
-            profit_loss_percent = (current_price - trade.buy_price_sol) / trade.buy_price_sol
-            
-            # Get settings from .env
-            take_profit = float(os.getenv('TAKE_PROFIT_PERCENT', '0.75'))    # 75%
-            stop_loss = float(os.getenv('STOP_LOSS_PERCENT', '0.52'))       # 52%
+            # Calculate P&L
+            pnl_percent = (current_price - trade.buy_price_sol) / trade.buy_price_sol
             
             should_sell = False
             sell_reason = ""
             
             # Take profit check
-            if profit_loss_percent >= take_profit:
+            if pnl_percent >= config.TAKE_PROFIT_PERCENT:
                 should_sell = True
-                sell_reason = f"Take Profit ({take_profit*100:.0f}%)"
+                sell_reason = f"Take Profit ({config.TAKE_PROFIT_PERCENT*100:.0f}%)"
             
             # Stop loss check
-            elif profit_loss_percent <= -stop_loss:
+            elif pnl_percent <= -config.STOP_LOSS_PERCENT:
                 should_sell = True
-                sell_reason = f"Stop Loss ({stop_loss*100:.0f}%)"
+                sell_reason = f"Stop Loss ({config.STOP_LOSS_PERCENT*100:.0f}%)"
             
-            # Time-based sell (24 hours with <5% movement)
+            # Time-based sell (24 hours)
             elif trade.created_at and (datetime.utcnow() - trade.created_at) > timedelta(hours=24):
-                if abs(profit_loss_percent) < 0.05:
+                if abs(pnl_percent) < 0.05:  # Less than 5% movement
                     should_sell = True
                     sell_reason = "Time-based (24h, <5% movement)"
             
             if should_sell:
-                await self.execute_sell(trade, sell_reason, current_price)
+                await self.execute_sell(trade, sell_reason, current_price, pnl_percent)
             
         except Exception as e:
-            logger.error(f"❌ Sell condition check error: {e}")
+            logger.error(f"❌ Check sell conditions error: {e}")
     
-    async def execute_sell(self, trade, reason: str, current_price: float):
+    async def execute_sell(self, trade, reason: str, current_price: float, pnl_percent: float):
         """Execute sell order"""
         try:
-            logger.warning(f"🔴 EXECUTING SELL: {trade.token_mint_address} - {reason}")
+            logger.warning(f"🔴 EXECUTING SELL: {truncate_address(trade.token_mint_address)} - {reason}")
             
             # Execute sell
-            sell_result = await sell_token_solana(
+            sell_result = await trader.sell_token(
                 trade.token_mint_address,
                 trade.amount_bought_token,
                 trade.wallet_token_account
             )
             
             if not sell_result:
-                logger.error(f"❌ Sell failed for {trade.token_mint_address}")
+                logger.error(f"❌ Sell failed for {truncate_address(trade.token_mint_address)}")
                 return
             
-            # Calculate final P&L
-            profit_loss_percent = (current_price - trade.buy_price_sol) / trade.buy_price_sol
-            is_real = not sell_result['sell_tx_signature'].startswith('mock_')
-            
-            # Update database - FIX CONTEXT MANAGER
+            # Update database
+            status = "sold_profit" if pnl_percent > 0 else "sold_loss"
             with get_db() as db:
-                status = "sold_profit" if profit_loss_percent > 0 else "sold_loss"
                 update_trade_status(
                     db, trade.id,
                     status=status,
                     sell_price_sol=sell_result['sell_price_sol'],
-                    sell_tx_signature=sell_result['sell_tx_signature']
+                    sell_tx_signature=sell_result['sell_tx_signature'],
+                    pnl_percent=pnl_percent * 100
                 )
             
             # Send notification
-            await self.send_sell_notification(trade, sell_result, reason, profit_loss_percent, is_real)
+            await self.notify_sell_executed(trade, sell_result, reason, pnl_percent)
             
-            logger.info(f"✅ Sell completed: {reason} - P&L: {profit_loss_percent*100:.2f}%")
+            logger.info(f"✅ Sell completed: {reason} - P&L: {pnl_percent*100:.2f}%")
             
         except Exception as e:
             logger.error(f"❌ Sell execution error: {e}")
     
-    async def send_sell_notification(self, trade, sell_result: dict, reason: str, profit_percent: float, is_real: bool):
-        """Send sell notification"""
+    async def notify_sell_executed(self, trade, sell_result: dict, reason: str, pnl_percent: float):
+        """Notify when sell is executed"""
         try:
+            is_real = not sell_result['sell_tx_signature'].startswith('mock_')
             status_emoji = "🔴" if is_real else "🟡"
-            profit_emoji = "📈" if profit_percent > 0 else "📉"
+            pnl_formatted = format_pnl(pnl_percent * 100)
             
+            # Explorer URL
             tx_signature = sell_result['sell_tx_signature']
             explorer_url = f"https://solscan.io/tx/{tx_signature}" if is_real else "N/A (Mock)"
             
             notification = f"""
-{status_emoji} **SELL EXECUTED** {profit_emoji}
+{status_emoji} **SELL EXECUTED** {pnl_formatted}
 
-🪙 **Token**: `{trade.token_mint_address}`
+🪙 **Token**: `{truncate_address(trade.token_mint_address)}`
 🏷️ **Platform**: {trade.platform.upper()}
 🎯 **Reason**: {reason}
 
 💰 **Buy Price**: {trade.buy_price_sol:.12f} SOL
 💰 **Sell Price**: {sell_result['sell_price_sol']:.12f} SOL
-📊 **P&L**: {profit_percent*100:.2f}%
+📊 **P&L**: {pnl_percent*100:.2f}%
 
-🔗 **Transaction**: [View on Solscan]({explorer_url})
+🔗 **TX**: [View on Solscan]({explorer_url})
 """
             
-            await self.send_dm_to_owner(notification)
+            await client.send_message(config.OWNER_ID, notification)
+            logger.info(f"📤 Sell notification sent")
             
         except Exception as e:
             logger.error(f"❌ Sell notification error: {e}")
     
-    async def send_dm_to_owner(self, message: str):
-        """Send DM to bot owner"""
-        try:
-            await client.send_message(OWNER_ID, message)
-            logger.info(f"📤 Notification sent to owner: {message[:100]}...")
-        except Exception as e:
-            logger.error(f"❌ DM send error: {e}")
+    async def heartbeat(self):
+        """Heartbeat to show bot is alive"""
+        while True:
+            try:
+                self.heartbeat_count += 1
+                logger.info(f"💓 Heartbeat #{self.heartbeat_count} - Bot is alive")
+                
+                # Show current status every 10 heartbeats
+                if self.heartbeat_count % 10 == 0:
+                    with get_db() as db:
+                        active_trades = get_active_trades(db)
+                    
+                    balance = await trader.get_wallet_balance()
+                    logger.info(f"📊 Status: {balance:.6f} SOL, {len(active_trades)} active trades")
+                
+                await asyncio.sleep(300)  # Every 5 minutes
+                
+            except Exception as e:
+                logger.error(f"❌ Heartbeat error: {e}")
+                await asyncio.sleep(300)
     
     async def send_status_report(self, event):
-        """Send status report"""
+        """Send comprehensive status report"""
         try:
             with get_db() as db:
                 active_trades = get_active_trades(db)
+                stats = get_trade_stats(db)
             
-            balance = await real_trader.get_wallet_balance()
+            balance = await trader.get_wallet_balance()
             
             status = f"""
-📊 **Bot Status Report**
+📊 **BOT STATUS REPORT**
 
-💎 **Wallet**: {real_trader.keypair.pubkey() if real_trader.keypair else 'Not loaded'}
+💎 **Wallet**: {truncate_address(str(trader.keypair.pubkey())) if trader.keypair else 'Not loaded'}
 💰 **Balance**: {balance:.6f} SOL
-🔴 **Real Trading**: {real_trader.enable_real_trading}
-📈 **Active Trades**: {len(active_trades)}/{MAX_PURCHASES}
+🔴 **Real Trading**: {'ON' if trader.enable_real_trading else 'OFF'}
+📈 **Active Trades**: {len(active_trades)}/{config.MAX_PURCHASES_ALLOWED}
+
+📊 **Trading Stats**:
+• Total Trades: {stats.get('total_trades', 0)}
+• Profitable: {stats.get('profitable_trades', 0)}
+• Losses: {stats.get('loss_trades', 0)}
+• Win Rate: {stats.get('win_rate', 0):.1f}%
+• Avg P&L: {stats.get('avg_pnl', 0):.2f}%
 
 🎯 **Settings**:
-• Buy Amount: {os.getenv('AMOUNT_TO_BUY_SOL')} SOL
-• Take Profit: {float(os.getenv('TAKE_PROFIT_PERCENT', '0.75'))*100:.0f}%
-• Stop Loss: {float(os.getenv('STOP_LOSS_PERCENT', '0.52'))*100:.0f}%
-• Slippage: {int(os.getenv('SLIPPAGE_BPS', '500'))/100:.1f}%
+• Buy Amount: {config.AMOUNT_TO_BUY_SOL} SOL
+• Take Profit: {config.TAKE_PROFIT_PERCENT*100:.0f}%
+• Stop Loss: {config.STOP_LOSS_PERCENT*100:.0f}%
+• Slippage: {config.SLIPPAGE_BPS/100:.1f}%
+
+🏷️ **Monitoring**:
+• Groups: {len(config.MONITOR_GROUPS)}
+• Channels: {len(config.MONITOR_CHANNELS)}
 """
             
             await event.reply(status)
             
         except Exception as e:
             logger.error(f"❌ Status report error: {e}")
+            await event.reply(f"❌ Error: {e}")
     
     async def send_active_trades(self, event):
         """Send active trades list"""
@@ -466,32 +511,62 @@ class RealTradingBot:
                 await event.reply("📊 No active trades")
                 return
             
-            trades_text = "📊 **Active Trades**:\n\n"
+            trades_text = "📊 **ACTIVE TRADES**:\n\n"
             
-            for i, trade in enumerate(active_trades[:5], 1):  # Show max 5
-                current_price = await get_token_price_sol(trade.token_mint_address)
+            for i, trade in enumerate(active_trades[:5], 1):
+                current_price = await trader.get_token_price_sol(trade.token_mint_address)
                 if current_price:
                     pnl = (current_price - trade.buy_price_sol) / trade.buy_price_sol * 100
-                    pnl_emoji = "📈" if pnl > 0 else "📉"
+                    pnl_formatted = format_pnl(pnl)
                 else:
-                    pnl = 0
-                    pnl_emoji = "❓"
+                    pnl_formatted = "❓ Unknown"
                 
                 trades_text += f"""
 {i}. **{trade.platform.upper()}**
-🪙 `{trade.token_mint_address[:16]}...`
+🪙 `{truncate_address(trade.token_mint_address)}`
 💰 Buy: {trade.buy_price_sol:.8f} SOL
-{pnl_emoji} P&L: {pnl:.1f}%
+{pnl_formatted}
 """
             
             await event.reply(trades_text)
             
         except Exception as e:
             logger.error(f"❌ Active trades error: {e}")
+            await event.reply(f"❌ Error: {e}")
+    
+    async def send_trading_stats(self, event):
+        """Send trading statistics"""
+        try:
+            with get_db() as db:
+                stats = get_trade_stats(db)
+            
+            stats_text = f"""
+📊 **TRADING STATISTICS**
 
-# Run the bot
+📈 **Performance**:
+• Total Trades: {stats.get('total_trades', 0)}
+• Active: {stats.get('active_trades', 0)}
+• Profitable: {stats.get('profitable_trades', 0)}
+• Losses: {stats.get('loss_trades', 0)}
+• Win Rate: {stats.get('win_rate', 0):.1f}%
+• Average P&L: {stats.get('avg_pnl', 0):.2f}%
+
+💰 **Settings**:
+• Buy Amount: {config.AMOUNT_TO_BUY_SOL} SOL
+• Max Active: {config.MAX_PURCHASES_ALLOWED}
+• Take Profit: {config.TAKE_PROFIT_PERCENT*100:.0f}%
+• Stop Loss: {config.STOP_LOSS_PERCENT*100:.0f}%
+"""
+            
+            await event.reply(stats_text)
+            
+        except Exception as e:
+            logger.error(f"❌ Stats error: {e}")
+            await event.reply(f"❌ Error: {e}")
+
+# Main function
 async def main():
-    bot = RealTradingBot()
+    bot = TradingBot()
     await bot.start()
 
 if __name__ == "__main__":
