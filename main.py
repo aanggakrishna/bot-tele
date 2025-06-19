@@ -23,16 +23,25 @@ client = TelegramClient("bot_session", API_ID, API_HASH)
 async def process_pinned_message(message, group_id, group_name):
     """Process a pinned message"""
     try:
+        logger.info(f"📌 Processing pinned message in {group_name} ({group_id})")
+        logger.debug(f"   Message attributes: {dir(message)}")
+
+        # Extract and log the content of the pinned message
         message_text = message.text or message.message or ""
         if not message_text and message.caption:
             message_text = message.caption
 
         if not message_text:
             logger.info(f"📌 Pinned message in {group_name} ({group_id}) is empty, skipping...")
-            return
+        else:
+            logger.info(f"📌 Pinned message content: {message_text}")
 
-        logger.info(f"📌 Pinned message detected in {group_name} ({group_id}): {message_text[:50]}...")
-        # Add your custom logic here (e.g., detect specific patterns, notify, etc.)
+        # Log additional details
+        logger.info(f"   Sender ID: {message.sender_id}")
+        logger.info(f"   Date: {message.date}")
+        logger.info(f"   Is Forwarded: {message.fwd_from is not None}")
+        logger.info(f"   Has Media: {message.media is not None}")
+
     except Exception as e:
         logger.error(f"❌ Error processing pinned message in {group_name}: {e}")
 
@@ -65,20 +74,25 @@ async def group_message_handler(event):
         logger.info(f"   Message Type: {type(event.message).__name__}")
         logger.info(f"   Message ID: {event.message.id if event.message else 'None'}")
 
-        # Check if the message is a service message (e.g., pin action)
-        if isinstance(event.message, MessageService):
-            logger.info(f"🔧 Service message detected in {group_name} ({group_id})")
-            if hasattr(event.message.action, "message"):
-                pinned_msg_id = event.message.action.message.id
-                logger.info(f"   Pinned Message ID: {pinned_msg_id}")
-                pinned_msg = await client.get_messages(group_id, ids=pinned_msg_id)
-                if pinned_msg:
-                    await process_pinned_message(pinned_msg, group_id, group_name)
+        # Debug all attributes of the message
+        logger.debug(f"   Message attributes: {dir(event.message)}")
+
+        # Extract and log the content of the message
+        message_text = event.message.text or event.message.message or ""
+        if not message_text and event.message.caption:
+            message_text = event.message.caption
+
+        if not message_text:
+            logger.info(f"📝 Message in {group_name} ({group_id}) is empty, skipping...")
         else:
-            # Check if the message is pinned
-            if hasattr(event.message, "pinned") and event.message.pinned:
-                logger.info(f"📌 Pinned message detected in {group_name} ({group_id})")
-                await process_pinned_message(event.message, group_id, group_name)
+            logger.info(f"📝 Message content: {message_text}")
+
+        # Log additional details
+        logger.info(f"   Sender ID: {event.message.sender_id}")
+        logger.info(f"   Date: {event.message.date}")
+        logger.info(f"   Is Forwarded: {event.message.fwd_from is not None}")
+        logger.info(f"   Has Media: {event.message.media is not None}")
+
     except Exception as e:
         logger.error(f"❌ Error in group message handler: {e}")
 
@@ -89,7 +103,30 @@ async def channel_message_handler(event):
     try:
         channel_id = event.chat_id
         channel_name = f"Channel {channel_id}"
-        await process_new_message(event.message, channel_name, channel_id)
+
+        logger.info(f"🔔 New message in {channel_name} ({channel_id})")
+        logger.info(f"   Message Type: {type(event.message).__name__}")
+        logger.info(f"   Message ID: {event.message.id if event.message else 'None'}")
+
+        # Debug all attributes of the message
+        logger.debug(f"   Message attributes: {dir(event.message)}")
+
+        # Extract and log the content of the message
+        message_text = event.message.text or event.message.message or ""
+        if not message_text and event.message.caption:
+            message_text = event.message.caption
+
+        if not message_text:
+            logger.info(f"📝 Message in {channel_name} ({channel_id}) is empty, skipping...")
+        else:
+            logger.info(f"📝 Message content: {message_text}")
+
+        # Log additional details
+        logger.info(f"   Sender ID: {event.message.sender_id}")
+        logger.info(f"   Date: {event.message.date}")
+        logger.info(f"   Is Forwarded: {event.message.fwd_from is not None}")
+        logger.info(f"   Has Media: {event.message.media is not None}")
+
     except Exception as e:
         logger.error(f"❌ Error in channel message handler: {e}")
 
