@@ -1,177 +1,76 @@
-import os
+import re
 import asyncio
-from datetime import datetime
-from dotenv import load_dotenv
 from telethon import TelegramClient, events
-from telethon.tl.types import MessageService
-from loguru import logger
+from datetime import datetime
+import logging
+import os
+from dotenv import load_dotenv
 
 # Load environment variables
 load_dotenv()
 
-# Configuration
+# --- Load from .env ---
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 OWNER_ID = int(os.getenv("OWNER_ID"))
-MONITOR_GROUPS = [int(x.strip()) for x in os.getenv("MONITOR_GROUPS", "").split(",") if x.strip()]
-MONITOR_CHANNELS = [int(x.strip()) for x in os.getenv("MONITOR_CHANNELS", "").split(",") if x.strip()]
+TO_USER_ID = int(os.getenv("TO_USER_ID"))
+MONITOR_GROUPS = [int(g) for g in os.getenv("MONITOR_GROUPS").split(",") if g.strip()]
+MONITOR_CHANNELS = [int(c) for c in os.getenv("MONITOR_CHANNELS").split(",") if c.strip()]
 
-# Initialize Telegram client
-client = TelegramClient("bot_session", API_ID, API_HASH)
+# --- Logging Setup ---
+logging.basicConfig(
+    filename='log.txt',
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
 
-# Function to process pinned messages
-async def process_pinned_message(message, group_id, group_name):
-    """Process a pinned message"""
-    try:
-        logger.info(f"📌 Processing pinned message in {group_name} ({group_id})")
-        logger.debug(f"   Message attributes: {dir(message)}")
+client = TelegramClient('monitor_bot', API_ID, API_HASH)
 
-        # Extract and log the content of the pinned message
-        message_text = message.text or message.message or ""
-        if not message_text and message.caption:
-            message_text = message.caption
+# --- Regex untuk mencari Solana CA ---
+CA_REGEX = re.compile(r'\b[1-9A-HJ-NP-Za-km-z]{32,44}\b')
 
-        if not message_text:
-            logger.info(f"📌 Pinned message in {group_name} ({group_id}) is empty, skipping...")
-        else:
-            logger.info(f"📌 Pinned message content: {message_text}")
+# --- Fungsi untuk mendeteksi dan kirim jika ada CA ---
+async def detect_and_forward_ca(event):
+    text = event.message.message if event.message else ''
+    matches = CA_REGEX.findall(text)
 
-        # Log additional details
-        logger.info(f"   Sender ID: {message.sender_id}")
-        logger.info(f"   Date: {message.date}")
-        logger.info(f"   Is Forwarded: {message.fwd_from is not None}")
-        logger.info(f"   Has Media: {message.media is not None}")
+    if matches:
+        ca_list = "\n".join(matches)
+        sender = await event.get_sender()
+        sender_name = sender.username or sender.first_name or "Unknown"
+        log_msg = f"[CA DETECTED] From: {sender_name} | Matches: {ca_list}"
+        logging.info(log_msg)
 
-    except Exception as e:
-        logger.error(f"❌ Error processing pinned message in {group_name}: {e}")
+        # Notifikasi ke OWNER
+        await client.send_message(OWNER_ID, f"🚨 CA Detected!\nFrom: {sender_name}\n\n{text}")
 
-# Function to process new messages
-async def process_new_message(message, source_name, source_id):
-    """Process a new message"""
-    try:
-        message_text = message.text or message.message or ""
-        if not message_text and message.caption:
-            message_text = message.caption
+        # Kirim hanya CA ke TO_USER
+        await client.send_message(TO_USER_ID, f"{ca_list}")
 
-        if not message_text:
-            logger.info(f"📝 New message in {source_name} ({source_id}) is empty, skipping...")
-            return
-
-        logger.info(f"📝 New message in {source_name} ({source_id}): {message_text[:50]}...")
-        # Add your custom logic here (e.g., detect specific patterns, notify, etc.)
-    except Exception as e:
-        logger.error(f"❌ Error processing new message in {source_name}: {e}")
-
-# Event handler for new messages in monitored groups
-@client.on(events.NewMessage(chats=MONITOR_GROUPS))
-async def group_message_handler(event):
-    """Handle new messages in monitored groups"""
-    try:
-        group_id = event.chat_id
-        group_name = f"Group {group_id}"
-
-        logger.info(f"🔔 New message in {group_name} ({group_id})")
-        logger.info(f"   Message Type: {type(event.message).__name__}")
-        logger.info(f"   Message ID: {event.message.id if event.message else 'None'}")
-
-        # Debug all attributes of the message
-        logger.debug(f"   Message attributes: {dir(event.message)}")
-
-        # Extract and log the content of the message
-        message_text = event.message.text or event.message.message or ""
-        if not message_text and event.message.caption:
-            message_text = event.message.caption
-
-        if not message_text:
-            logger.info(f"📝 Message in {group_name} ({group_id}) is empty, skipping...")
-        else:
-            logger.info(f"📝 Message content: {message_text}")
-
-        # Log additional details
-        logger.info(f"   Sender ID: {event.message.sender_id}")
-        logger.info(f"   Date: {event.message.date}")
-        logger.info(f"   Is Forwarded: {event.message.fwd_from is not None}")
-        logger.info(f"   Has Media: {event.message.media is not None}")
-
-    except Exception as e:
-        logger.error(f"❌ Error in group message handler: {e}")
-
-# Event handler for new messages in monitored channels
+# --- Event Handler untuk pesan baru di CHANNEL ---
 @client.on(events.NewMessage(chats=MONITOR_CHANNELS))
-async def channel_message_handler(event):
-    """Handle new messages in monitored channels"""
-    try:
-        channel_id = event.chat_id
-        channel_name = f"Channel {channel_id}"
+async def handler_new_channel_message(event):
+    await detect_and_forward_ca(event)
 
-        logger.info(f"🔔 New message in {channel_name} ({channel_id})")
-        logger.info(f"   Message Type: {type(event.message).__name__}")
-        logger.info(f"   Message ID: {event.message.id if event.message else 'None'}")
+# --- Event Handler untuk pin message di GROUP ---
+@client.on(events.MessagePinned(chats=MONITOR_GROUPS))
+async def handler_pin_group(event):
+    await detect_and_forward_ca(event)
 
-        # Debug all attributes of the message
-        logger.debug(f"   Message attributes: {dir(event.message)}")
-
-        # Extract and log the content of the message
-        message_text = event.message.text or event.message.message or ""
-        if not message_text and event.message.caption:
-            message_text = event.message.caption
-
-        if not message_text:
-            logger.info(f"📝 Message in {channel_name} ({channel_id}) is empty, skipping...")
-        else:
-            logger.info(f"📝 Message content: {message_text}")
-
-        # Log additional details
-        logger.info(f"   Sender ID: {event.message.sender_id}")
-        logger.info(f"   Date: {event.message.date}")
-        logger.info(f"   Is Forwarded: {event.message.fwd_from is not None}")
-        logger.info(f"   Has Media: {event.message.media is not None}")
-
-    except Exception as e:
-        logger.error(f"❌ Error in channel message handler: {e}")
-
-# Periodic task to check pinned messages in groups
-async def periodic_pin_check():
-    """Check pinned messages in monitored groups periodically"""
+# --- Heartbeat setiap 2 detik ---
+async def heartbeat():
     while True:
-        try:
-            for group_id in MONITOR_GROUPS:
-                group_name = f"Group {group_id}"
-                logger.info(f"🔍 Checking pinned messages in {group_name} ({group_id})...")
-                try:
-                    # Get the full chat to access pinned message ID
-                    full_chat = await client.get_entity(group_id)
-                    if hasattr(full_chat, "pinned_msg_id") and full_chat.pinned_msg_id:
-                        pinned_msg_id = full_chat.pinned_msg_id
-                        pinned_msg = await client.get_messages(group_id, ids=pinned_msg_id)
-                        if pinned_msg:
-                            await process_pinned_message(pinned_msg, group_id, group_name)
-                except Exception as e:
-                    logger.warning(f"⚠️ Could not check pinned messages in {group_name}: {e}")
-            await asyncio.sleep(30)  # Check every 30 seconds
-        except asyncio.CancelledError:
-            break
-        except Exception as e:
-            logger.error(f"❌ Error in periodic pin check: {e}")
-            await asyncio.sleep(60)
+        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        print(f"[HEARTBEAT] {now}")
+        logging.info("[HEARTBEAT]")
+        await asyncio.sleep(2)
 
-# Main function
+# --- Main ---
 async def main():
-    """Main entry point"""
-    logger.info("🚀 Starting Telegram Monitor Bot...")
     await client.start()
-    logger.success("✅ Telegram client started successfully")
+    print("Bot is running...")
+    logging.info("Bot started.")
+    await asyncio.gather(client.run_until_disconnected(), heartbeat())
 
-    # Start periodic pin check
-    asyncio.create_task(periodic_pin_check())
-
-    # Keep the bot running
-    logger.info("🔄 Bot is running... Press Ctrl+C to stop")
-    await client.run_until_disconnected()
-
-# Run the bot
-if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        logger.info("👋 Bot stopped by user")
+if __name__ == '__main__':
+    asyncio.run(main())
