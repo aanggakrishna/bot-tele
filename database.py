@@ -2,7 +2,7 @@ import sqlite3
 from datetime import datetime
 from typing import List, Optional
 from dataclasses import dataclass
-from contextmanager import contextmanager
+from contextlib import contextmanager  # FIXED: was 'from contextmanager import contextmanager'
 from loguru import logger
 from config import config
 
