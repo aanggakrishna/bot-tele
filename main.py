@@ -67,12 +67,19 @@ class RealTradingBot:
         
         # Start monitoring task
         asyncio.create_task(self.monitor_trades())
+        asyncio.create_task(self.heartbeat())  # Add heartbeat task
         
         # Setup message handlers
         self.setup_handlers()
         
         logger.info("✅ Bot is running and monitoring...")
         await client.run_until_disconnected()
+
+    async def heartbeat(self):
+        """Log heartbeat to indicate bot is running"""
+        while True:
+            logger.info("💓 Heartbeat: Bot is running...")
+            await asyncio.sleep(60)  # Log every 60 seconds
     
     def setup_handlers(self):
         """Setup Telegram message handlers"""
@@ -115,6 +122,32 @@ class RealTradingBot:
         @client.on(events.NewMessage(pattern='/trades', chats=[OWNER_ID]))
         async def handle_trades(event):
             await self.send_active_trades(event)
+        
+        @client.on(events.MessagePinned(chats=MONITOR_GROUPS))
+        async def handle_pinned_message(event):
+            try:
+                message_text = event.message.raw_text
+                if not message_text:
+                    return
+                
+                logger.debug(f"📌 Pinned message detected: {message_text[:100]}...")
+                
+                # Detect token addresses
+                tokens = self.extract_token_addresses(message_text)
+                if not tokens:
+                    return
+                
+                # Detect platform
+                platform = self.detect_platform(message_text)
+                
+                # Process each token
+                for token in tokens:
+                    if is_valid_solana_address(token):
+                        logger.info(f"🎯 Token detected from pinned message: {token} on {platform}")
+                        await self.process_buy_signal(token, platform, message_text)
+                
+            except Exception as e:
+                logger.error(f"❌ Pinned message handler error: {e}")
     
     def extract_token_addresses(self, text: str) -> List[str]:
         """Extract Solana token addresses from text"""
@@ -391,6 +424,7 @@ class RealTradingBot:
         """Send DM to bot owner"""
         try:
             await client.send_message(OWNER_ID, message)
+            logger.info(f"📤 Notification sent to owner: {message[:100]}...")
         except Exception as e:
             logger.error(f"❌ DM send error: {e}")
     
