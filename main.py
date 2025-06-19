@@ -5,6 +5,7 @@ from typing import List
 from loguru import logger
 from telethon import TelegramClient, events
 from telethon.tl.types import UpdatePinnedMessages
+from telethon.errors import ChatAdminRequiredError, ChannelPrivateError
 
 from config import config
 from database import init_db, get_db, save_signal, save_trade, get_active_trades, update_trade_status, get_trade_stats
@@ -51,6 +52,9 @@ class TradingBot:
         await client.start()
         logger.info("📱 Telegram client connected")
         
+        # Check channel access
+        await self.check_channel_access()
+        
         # Setup handlers
         self.setup_handlers()
         
@@ -65,32 +69,91 @@ class TradingBot:
         # Run until disconnected
         await client.run_until_disconnected()
     
+    async def check_channel_access(self):
+        """Check if bot can access monitored channels"""
+        logger.info("🔍 Checking channel access...")
+        
+        # Check channels
+        for channel_id in config.MONITOR_CHANNELS:
+            try:
+                entity = await client.get_entity(channel_id)
+                logger.info(f"✅ Channel access OK: {entity.title} ({channel_id})")
+                
+                # Get recent messages to test
+                messages = await client.get_messages(channel_id, limit=3)
+                logger.info(f"📊 Recent messages in {entity.title}: {len(messages)}")
+                
+                for msg in messages:
+                    if msg.message:
+                        logger.debug(f"📝 Sample message: {msg.message[:100]}...")
+                
+            except ChannelPrivateError:
+                logger.error(f"❌ Channel {channel_id} is private or bot not member!")
+            except ChatAdminRequiredError:
+                logger.error(f"❌ Channel {channel_id} requires admin access!")
+            except Exception as e:
+                logger.error(f"❌ Channel {channel_id} access error: {e}")
+        
+        # Check groups
+        for group_id in config.MONITOR_GROUPS:
+            try:
+                entity = await client.get_entity(group_id)
+                logger.info(f"✅ Group access OK: {entity.title} ({group_id})")
+            except Exception as e:
+                logger.error(f"❌ Group {group_id} access error: {e}")
+    
     def setup_handlers(self):
         """Setup Telegram event handlers"""
         
-        # Handle new messages in monitored channels
-        @client.on(events.NewMessage(chats=config.MONITOR_CHANNELS))
-        async def handle_channel_message(event):
+        # Handle ALL new messages first (for debugging)
+        @client.on(events.NewMessage)
+        async def handle_all_messages(event):
             try:
-                await self.process_message(event, 'channel')
+                chat_id = event.chat_id
+                
+                # Check if it's from monitored channels or groups
+                if chat_id in config.MONITOR_CHANNELS:
+                    logger.info(f"📨 CHANNEL MESSAGE: {chat_id}")
+                    await self.process_message(event, 'channel')
+                elif chat_id in config.MONITOR_GROUPS:
+                    logger.info(f"📨 GROUP MESSAGE: {chat_id}")
+                    await self.process_message(event, 'group')
+                else:
+                    # Log all other messages for debugging
+                    logger.debug(f"🔍 Other message from: {chat_id}")
+                    
             except Exception as e:
-                logger.error(f"❌ Channel message handler error: {e}")
+                logger.error(f"❌ All messages handler error: {e}")
         
         # Handle pinned messages in monitored groups (using Raw updates)
         @client.on(events.Raw)
         async def handle_raw_updates(event):
             try:
                 if isinstance(event, UpdatePinnedMessages):
+                    logger.info(f"📌 PINNED MESSAGE DETECTED: {event}")
+                    
                     # Get the pinned message
                     chat_id = getattr(event, 'peer', None)
                     if chat_id and hasattr(chat_id, 'channel_id'):
                         full_chat_id = -int(f"100{chat_id.channel_id}")
+                        
+                        logger.info(f"📌 Pin from chat: {full_chat_id}")
+                        
                         if full_chat_id in config.MONITOR_GROUPS:
+                            logger.info(f"📌 Processing pin from monitored group: {full_chat_id}")
+                            
                             # Get the actual message
-                            messages = await client.get_messages(full_chat_id, ids=event.messages)
-                            for message in messages:
-                                if message:
-                                    await self.process_message_content(message.message or "", 'pin', full_chat_id)
+                            try:
+                                messages = await client.get_messages(full_chat_id, ids=event.messages)
+                                for message in messages:
+                                    if message and message.message:
+                                        logger.info(f"📌 Pinned message text: {message.message[:100]}...")
+                                        await self.process_message_content(message.message, 'pin', full_chat_id)
+                            except Exception as e:
+                                logger.error(f"❌ Error getting pinned message: {e}")
+                        else:
+                            logger.debug(f"📌 Pin from non-monitored group: {full_chat_id}")
+                            
             except Exception as e:
                 logger.error(f"❌ Pin handler error: {e}")
         
@@ -112,16 +175,67 @@ class TradingBot:
         async def handle_stats(event):
             await self.send_trading_stats(event)
         
+        # Debug command
+        @client.on(events.NewMessage(pattern='/debug', chats=[config.OWNER_ID]))
+        async def handle_debug(event):
+            await self.send_debug_info(event)
+        
+        # Test command
+        @client.on(events.NewMessage(pattern='/test', chats=[config.OWNER_ID]))
+        async def handle_test(event):
+            await event.reply("🤖 Bot is responsive!")
+            
+            # Test channel access
+            for channel_id in config.MONITOR_CHANNELS:
+                try:
+                    entity = await client.get_entity(channel_id)
+                    await event.reply(f"✅ Channel: {entity.title}")
+                except Exception as e:
+                    await event.reply(f"❌ Channel {channel_id}: {e}")
+        
         logger.info("✅ Event handlers registered")
+    
+    async def send_debug_info(self, event):
+        """Send debug information"""
+        try:
+            debug_info = f"""
+🔍 **DEBUG INFORMATION**
+
+📊 **Configuration**:
+• Monitor Groups: {config.MONITOR_GROUPS}
+• Monitor Channels: {config.MONITOR_CHANNELS}
+• Owner ID: {config.OWNER_ID}
+
+🤖 **Bot Status**:
+• Heartbeat: {self.heartbeat_count}
+• Real Trading: {trader.enable_real_trading}
+
+📱 **Telegram**:
+• Client Connected: {client.is_connected()}
+• User ID: {(await client.get_me()).id}
+"""
+            
+            await event.reply(debug_info)
+            
+        except Exception as e:
+            logger.error(f"❌ Debug info error: {e}")
+            await event.reply(f"❌ Error: {e}")
     
     async def process_message(self, event, source_type: str):
         """Process incoming message"""
         try:
             message_text = event.raw_text
-            if not message_text or len(message_text) < 20:
+            if not message_text:
+                logger.debug(f"📨 Empty message from {event.chat_id}")
+                return
+            
+            if len(message_text) < 10:
+                logger.debug(f"📨 Short message ({len(message_text)} chars): {message_text}")
                 return
             
             chat_id = event.chat_id
+            logger.info(f"📨 Processing {source_type} message from {chat_id}: {message_text[:100]}...")
+            
             await self.process_message_content(message_text, source_type, chat_id)
             
         except Exception as e:
@@ -130,37 +244,51 @@ class TradingBot:
     async def process_message_content(self, message_text: str, source_type: str, source_id: int):
         """Process message content for CA detection"""
         try:
-            logger.debug(f"📨 {source_type.upper()}: {message_text[:100]}...")
+            logger.info(f"🔍 Analyzing {source_type.upper()} message: {message_text[:100]}...")
             
             # Extract Solana addresses
             addresses = extract_solana_addresses(message_text)
+            logger.info(f"🔍 Found {len(addresses)} potential addresses: {addresses}")
+            
             if not addresses:
+                logger.debug(f"🔍 No addresses found in message")
                 return
             
             # Detect platform
             platform = detect_platform(message_text)
+            logger.info(f"🔍 Detected platform: {platform}")
             
             # Process each valid address
+            valid_addresses = []
             for address in addresses:
                 if trader.is_valid_solana_address(address):
-                    # Check if it's not a common token (SOL, USDC, etc.)
-                    if self.is_excluded_address(address):
-                        continue
-                    
-                    logger.info(f"🎯 CA DETECTED: {truncate_address(address)} on {platform.upper()}")
-                    
-                    # Save signal to database
+                    if not self.is_excluded_address(address):
+                        valid_addresses.append(address)
+                        logger.info(f"🎯 VALID CA DETECTED: {truncate_address(address)} on {platform.upper()}")
+                    else:
+                        logger.debug(f"🚫 Excluded address: {truncate_address(address)}")
+                else:
+                    logger.debug(f"❌ Invalid address: {address}")
+            
+            # Process valid addresses
+            for address in valid_addresses:
+                # Save signal to database
+                try:
                     with get_db() as db:
                         save_signal(db, address, platform, source_type, source_id, message_text)
-                    
-                    # Send notification to owner
-                    await self.notify_ca_detected(address, platform, source_type, message_text)
-                    
-                    # Process buy signal
-                    await self.process_buy_signal(address, platform, message_text)
+                except Exception as e:
+                    logger.error(f"❌ Save signal error: {e}")
+                
+                # Send notification to owner
+                await self.notify_ca_detected(address, platform, source_type, message_text)
+                
+                # Process buy signal
+                await self.process_buy_signal(address, platform, message_text)
             
         except Exception as e:
             logger.error(f"❌ Process message content error: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
     
     def is_excluded_address(self, address: str) -> bool:
         """Check if address should be excluded"""
@@ -168,19 +296,24 @@ class TradingBot:
             'So11111111111111111111111111111111111111112',  # SOL
             'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',  # USDC
             'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB',  # USDT
+            '11111111111111111111111111111111',  # System Program
         ]
         return address in excluded
     
     async def notify_ca_detected(self, token_mint: str, platform: str, source_type: str, message_text: str):
         """Send CA detected notification to owner"""
         try:
+            # Get token price
+            price = await trader.get_token_price_sol(token_mint)
+            price_text = f"{price:.12f} SOL" if price else "Price check failed"
+            
             notification = f"""
 🎯 **CA DETECTED**
 
 🪙 **Token**: `{token_mint}`
 🏷️ **Platform**: {platform.upper()}
 📍 **Source**: {source_type.upper()}
-💰 **Price**: Checking...
+💰 **Price**: {price_text}
 
 📝 **Message**:
 {message_text[:300]}...
@@ -191,6 +324,8 @@ class TradingBot:
             
         except Exception as e:
             logger.error(f"❌ CA notification error: {e}")
+    
+    # ... (rest of the methods remain the same)
     
     async def process_buy_signal(self, token_mint: str, platform: str, message_text: str):
         """Process buy signal for detected CA"""
@@ -312,6 +447,30 @@ class TradingBot:
             
         except Exception as e:
             logger.error(f"❌ Buy notification error: {e}")
+    
+    async def heartbeat(self):
+        """Heartbeat to show bot is alive"""
+        while True:
+            try:
+                self.heartbeat_count += 1
+                logger.info(f"💓 Heartbeat #{self.heartbeat_count} - Bot is alive")
+                
+                # Show monitoring status
+                logger.info(f"👁️ Monitoring: Groups {config.MONITOR_GROUPS}, Channels {config.MONITOR_CHANNELS}")
+                
+                # Show current status every 10 heartbeats
+                if self.heartbeat_count % 10 == 0:
+                    with get_db() as db:
+                        active_trades = get_active_trades(db)
+                    
+                    balance = await trader.get_wallet_balance()
+                    logger.info(f"📊 Status: {balance:.6f} SOL, {len(active_trades)} active trades")
+                
+                await asyncio.sleep(300)  # Every 5 minutes
+                
+            except Exception as e:
+                logger.error(f"❌ Heartbeat error: {e}")
+                await asyncio.sleep(300)
     
     async def monitor_trades(self):
         """Monitor active trades for sell conditions"""
@@ -438,27 +597,6 @@ class TradingBot:
             
         except Exception as e:
             logger.error(f"❌ Sell notification error: {e}")
-    
-    async def heartbeat(self):
-        """Heartbeat to show bot is alive"""
-        while True:
-            try:
-                self.heartbeat_count += 1
-                logger.info(f"💓 Heartbeat #{self.heartbeat_count} - Bot is alive")
-                
-                # Show current status every 10 heartbeats
-                if self.heartbeat_count % 10 == 0:
-                    with get_db() as db:
-                        active_trades = get_active_trades(db)
-                    
-                    balance = await trader.get_wallet_balance()
-                    logger.info(f"📊 Status: {balance:.6f} SOL, {len(active_trades)} active trades")
-                
-                await asyncio.sleep(300)  # Every 5 minutes
-                
-            except Exception as e:
-                logger.error(f"❌ Heartbeat error: {e}")
-                await asyncio.sleep(300)
     
     async def send_status_report(self, event):
         """Send comprehensive status report"""
