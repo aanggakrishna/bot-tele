@@ -15,6 +15,9 @@ class Config:
     MONITOR_GROUPS = [int(x.strip()) for x in os.getenv('MONITOR_GROUPS', '').split(',') if x.strip()]
     MONITOR_CHANNELS = [int(x.strip()) for x in os.getenv('MONITOR_CHANNELS', '').split(',') if x.strip()]
     
+    # Bot Configuration
+    BOT_ENABLED = os.getenv('BOT_ENABLED', 'true').lower() == 'true'  # Tambahkan ini
+    
     # Solana Configuration
     RPC_URL = os.getenv('RPC_URL', 'https://api.mainnet-beta.solana.com')
     SOLANA_PRIVATE_KEY_BASE58 = os.getenv('SOLANA_PRIVATE_KEY_BASE58')
