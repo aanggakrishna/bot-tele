@@ -156,41 +156,41 @@ class TelegramMonitorBot:
             logger.error(f"❌ Error handling channel message: {e}")
     
     async def handle_pinned_message(self, event):
-    """Handle pinned message in monitored group"""
-    try:
-        # Check if message is valid
-        if not event.message:
-            return
-        
-        message = event.message
-        
-        # Get group details
-        group_id = str(event.chat_id)
-        group_name = self.entity_details['groups'].get(group_id, f"Group {group_id}")
-        
-        # Extract message text
-        message_text = message.text or message.message or ""
-        if not message_text and message.caption:
-            message_text = message.caption
+        """Handle pinned message in monitored group"""
+        try:
+            # Check if message is valid
+            if not event.message:
+                return
             
-        # Skip empty messages
-        if not message_text:
-            return
-        
-        logger.info(f"📌 Pinned message in {group_name} ({group_id})")
-        
-        # Process message to detect CAs
-        source_info = f"{group_name} (Pinned)"
-        ca_results = self.detector.process_message(message_text, source_info)
-        
-        # Send notifications for each CA
-        for ca_data in ca_results:
-            await self.send_notification(ca_data, source_info, message_text)
-        
-    except Exception as e:
-        logger.error(f"❌ Error handling pinned message: {e}")
-        import traceback
-        logger.error(f"Traceback: {traceback.format_exc()}")
+            message = event.message
+            
+            # Get group details
+            group_id = str(event.chat_id)
+            group_name = self.entity_details['groups'].get(group_id, f"Group {group_id}")
+            
+            # Extract message text
+            message_text = message.text or message.message or ""
+            if not message_text and message.caption:
+                message_text = message.caption
+                
+            # Skip empty messages
+            if not message_text:
+                return
+            
+            logger.info(f"📌 Pinned message in {group_name} ({group_id})")
+            
+            # Process message to detect CAs
+            source_info = f"{group_name} (Pinned)"
+            ca_results = self.detector.process_message(message_text, source_info)
+            
+            # Send notifications for each CA
+            for ca_data in ca_results:
+                await self.send_notification(ca_data, source_info, message_text)
+            
+        except Exception as e:
+            logger.error(f"❌ Error handling pinned message: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
     
     async def heartbeat(self):
         """Send heartbeat to terminal"""
@@ -226,48 +226,48 @@ class TelegramMonitorBot:
                 await asyncio.sleep(10)
     
     async def setup_handlers(self):
-    """Setup event handlers"""
-    try:
-        # Monitor new messages in channels
-        @self.client.on(events.NewMessage(chats=config.MONITOR_CHANNELS))
-        async def channel_handler(event):
-            await self.handle_new_channel_message(event)
-        
-        # Method 1: Watch for pin notifications using ChatAction
-        # Note: Requires recent Telethon version
+        """Setup event handlers"""
         try:
-            @self.client.on(events.ChatAction(chats=config.MONITOR_GROUPS))
-            async def action_handler(event):
-                if hasattr(event, 'action') and hasattr(event.action, 'message'):
-                    # This is likely a pin event
-                    try:
-                        pinned_msg_id = event.action.message.id
-                        pinned_msg = await self.client.get_messages(event.chat_id, ids=pinned_msg_id)
-                        if pinned_msg:
-                            await self.handle_pinned_message_by_id(event.chat_id, pinned_msg)
-                    except Exception as e:
-                        logger.error(f"❌ Error in action handler: {e}")
+            # Monitor new messages in channels
+            @self.client.on(events.NewMessage(chats=config.MONITOR_CHANNELS))
+            async def channel_handler(event):
+                await self.handle_new_channel_message(event)
+            
+            # Method 1: Watch for pin notifications using ChatAction
+            # Note: Requires recent Telethon version
+            try:
+                @self.client.on(events.ChatAction(chats=config.MONITOR_GROUPS))
+                async def action_handler(event):
+                    if hasattr(event, 'action') and hasattr(event.action, 'message'):
+                        # This is likely a pin event
+                        try:
+                            pinned_msg_id = event.action.message.id
+                            pinned_msg = await self.client.get_messages(event.chat_id, ids=pinned_msg_id)
+                            if pinned_msg:
+                                await self.handle_pinned_message_by_id(event.chat_id, pinned_msg)
+                        except Exception as e:
+                            logger.error(f"❌ Error in action handler: {e}")
+            except Exception as e:
+                logger.warning(f"⚠️ ChatAction handler setup failed: {e}")
+            
+            # Method 2: Check message pinned status in new & edited messages
+            @self.client.on(events.NewMessage(chats=config.MONITOR_GROUPS))
+            async def new_message_handler(event):
+                if hasattr(event.message, 'pinned') and event.message.pinned:
+                    await self.handle_pinned_message(event)
+            
+            @self.client.on(events.MessageEdited(chats=config.MONITOR_GROUPS))
+            async def edit_handler(event):
+                if hasattr(event.message, 'pinned') and event.message.pinned:
+                    await self.handle_pinned_message(event)
+            
+            # Method 3: Periodically check pinned messages
+            self.check_pins_task = asyncio.create_task(self.periodic_pin_check())
+            
+            logger.success("✅ Event handlers registered")
+            
         except Exception as e:
-            logger.warning(f"⚠️ ChatAction handler setup failed: {e}")
-        
-        # Method 2: Check message pinned status in new & edited messages
-        @self.client.on(events.NewMessage(chats=config.MONITOR_GROUPS))
-        async def new_message_handler(event):
-            if hasattr(event.message, 'pinned') and event.message.pinned:
-                await self.handle_pinned_message(event)
-        
-        @self.client.on(events.MessageEdited(chats=config.MONITOR_GROUPS))
-        async def edit_handler(event):
-            if hasattr(event.message, 'pinned') and event.message.pinned:
-                await self.handle_pinned_message(event)
-        
-        # Method 3: Periodically check pinned messages
-        self.check_pins_task = asyncio.create_task(self.periodic_pin_check())
-        
-        logger.success("✅ Event handlers registered")
-        
-    except Exception as e:
-        logger.error(f"❌ Failed to setup handlers: {e}")
+            logger.error(f"❌ Failed to setup handlers: {e}")
 
 # Add new method for periodic pin checking
 async def periodic_pin_check(self):
