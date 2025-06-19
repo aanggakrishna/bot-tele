@@ -256,66 +256,66 @@ class TelegramMonitorBot:
             logger.error(f"❌ Error loading entity details: {e}")
     
     async def send_notification(self, ca_data, source_info, message_text):
-    """Send notification to owner and configured user"""
-    try:
-        # Get CA data
-        platform = ca_data['platform'].upper()
-        address = ca_data['address']
-        
-        # Create detailed message for owner and saved messages
-        detailed_message = f"🚨 **{platform} CA DETECTED!**\n\n"
-        detailed_message += f"🔗 `{address}`\n\n"
-        detailed_message += f"📊 **Source:** {source_info}\n"
-        detailed_message += f"🕒 **Time:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
-        
-        # Add snippet of original message (truncate if too long)
-        snippet = message_text.strip()
-        if len(snippet) > 300:
-            snippet = snippet[:297] + "..."
-        detailed_message += f"📝 **Message:**\n{snippet}"
-        
-        # Send detailed message to owner
+        """Send notification to owner and configured user"""
         try:
-            await self.client.send_message(config.OWNER_ID, detailed_message)
-            logger.info(f"📨 Detailed notification sent to OWNER_ID: {config.OWNER_ID}")
-        except Exception as e:
-            logger.error(f"❌ Failed to send to OWNER_ID: {e}")
-        
-        # Send only CA to configured user (TO_USER_ID) if different from owner
-        if config.TO_USER_ID and config.TO_USER_ID != config.OWNER_ID:
+            # Get CA data
+            platform = ca_data['platform'].upper()
+            address = ca_data['address']
+            
+            # Create detailed message for owner and saved messages
+            detailed_message = f"🚨 **{platform} CA DETECTED!**\n\n"
+            detailed_message += f"🔗 `{address}`\n\n"
+            detailed_message += f"📊 **Source:** {source_info}\n"
+            detailed_message += f"🕒 **Time:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+            
+            # Add snippet of original message (truncate if too long)
+            snippet = message_text.strip()
+            if len(snippet) > 300:
+                snippet = snippet[:297] + "..."
+            detailed_message += f"📝 **Message:**\n{snippet}"
+            
+            # Send detailed message to owner
             try:
-                # Try to get the entity first to ensure it exists
-                try:
-                    user_entity = await self.client.get_entity(config.TO_USER_ID)
-                    logger.debug(f"✅ Found TO_USER_ID entity: {getattr(user_entity, 'username', 'No username')}")
-                except Exception as entity_error:
-                    logger.warning(f"⚠️ Cannot find TO_USER_ID entity: {entity_error}")
-                    logger.info(f"💡 TO_USER_ID {config.TO_USER_ID} needs to start a conversation with the bot first")
-                    # Skip sending to TO_USER_ID but continue with other notifications
-                    raise entity_error
-                
-                # Simple message with just the CA
-                simple_message = f"{address}"
-                await self.client.send_message(config.TO_USER_ID, simple_message)
-                logger.info(f"📨 CA only sent to TO_USER_ID: {config.TO_USER_ID}")
-                
+                await self.client.send_message(config.OWNER_ID, detailed_message)
+                logger.info(f"📨 Detailed notification sent to OWNER_ID: {config.OWNER_ID}")
             except Exception as e:
-                logger.error(f"❌ Failed to send to TO_USER_ID: {e}")
-                logger.info(f"💡 Tip: User {config.TO_USER_ID} should send a message to the bot account first")
-        
-        # Save detailed message to "Saved Messages"
-        try:
-            await self.client.send_message('me', detailed_message)
-            logger.info("📨 Notification saved to Saved Messages")
+                logger.error(f"❌ Failed to send to OWNER_ID: {e}")
+            
+            # Send only CA to configured user (TO_USER_ID) if different from owner
+            if config.TO_USER_ID and config.TO_USER_ID != config.OWNER_ID:
+                try:
+                    # Try to get the entity first to ensure it exists
+                    try:
+                        user_entity = await self.client.get_entity(config.TO_USER_ID)
+                        logger.debug(f"✅ Found TO_USER_ID entity: {getattr(user_entity, 'username', 'No username')}")
+                    except Exception as entity_error:
+                        logger.warning(f"⚠️ Cannot find TO_USER_ID entity: {entity_error}")
+                        logger.info(f"💡 TO_USER_ID {config.TO_USER_ID} needs to start a conversation with the bot first")
+                        # Skip sending to TO_USER_ID but continue with other notifications
+                        raise entity_error
+                    
+                    # Simple message with just the CA
+                    simple_message = f"{address}"
+                    await self.client.send_message(config.TO_USER_ID, simple_message)
+                    logger.info(f"📨 CA only sent to TO_USER_ID: {config.TO_USER_ID}")
+                    
+                except Exception as e:
+                    logger.error(f"❌ Failed to send to TO_USER_ID: {e}")
+                    logger.info(f"💡 Tip: User {config.TO_USER_ID} should send a message to the bot account first")
+            
+            # Save detailed message to "Saved Messages"
+            try:
+                await self.client.send_message('me', detailed_message)
+                logger.info("📨 Notification saved to Saved Messages")
+            except Exception as e:
+                logger.error(f"❌ Failed to save to Saved Messages: {e}")
+            
+            logger.success(f"✅ Notification sent for {platform} CA: {address[:8]}...")
+            
         except Exception as e:
-            logger.error(f"❌ Failed to save to Saved Messages: {e}")
-        
-        logger.success(f"✅ Notification sent for {platform} CA: {address[:8]}...")
-        
-    except Exception as e:
-        logger.error(f"❌ Failed to send notification: {e}")
-        import traceback
-        logger.error(f"Traceback: {traceback.format_exc()}")
+            logger.error(f"❌ Failed to send notification: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
     
     async def handle_new_channel_message(self, event):
         """Handle new message in monitored channel"""
