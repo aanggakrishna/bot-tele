@@ -45,38 +45,38 @@ class TelegramMonitorBot:
             return False
     
     async def load_entity_details(self):
-    """Load entity details (names, etc.)"""
-    try:
-        # Load from config if available
-        self.entity_details = config.get_entity_details()
-        
-        # Update with fresh data
-        for group_id in config.MONITOR_GROUPS:
-            try:
-                group = await self.client.get_entity(group_id)
-                self.entity_details['groups'][str(group_id)] = getattr(group, 'title', f"Group {group_id}")
-                logger.info(f"✅ Loaded group: {self.entity_details['groups'][str(group_id)]} ({group_id})")
-            except Exception as e:
-                logger.warning(f"⚠️ Could not load group {group_id}: {e}")
-        
-        for channel_id in config.MONITOR_CHANNELS:
-            try:
-                channel = await self.client.get_entity(channel_id)
-                self.entity_details['channels'][str(channel_id)] = getattr(channel, 'title', f"Channel {channel_id}")
-                logger.info(f"✅ Loaded channel: {self.entity_details['channels'][str(channel_id)]} ({channel_id})")
-            except Exception as e:
-                logger.warning(f"⚠️ Could not load channel {channel_id}: {e}")
-        
-        # Save updated details
-        config.save_entity_details(self.entity_details)
-        
-    except Exception as e:
-        logger.error(f"❌ Error loading entity details: {e}")
-        # Initialize with default values if failed
-        self.entity_details = {
-            'groups': {str(id): f"Group {id}" for id in config.MONITOR_GROUPS},
-            'channels': {str(id): f"Channel {id}" for id in config.MONITOR_CHANNELS}
-        }
+        """Load entity details (names, etc.)"""
+        try:
+            # Load from config if available
+            self.entity_details = config.get_entity_details()
+            
+            # Update with fresh data
+            for group_id in config.MONITOR_GROUPS:
+                try:
+                    group = await self.client.get_entity(group_id)
+                    self.entity_details['groups'][str(group_id)] = getattr(group, 'title', f"Group {group_id}")
+                    logger.info(f"✅ Loaded group: {self.entity_details['groups'][str(group_id)]} ({group_id})")
+                except Exception as e:
+                    logger.warning(f"⚠️ Could not load group {group_id}: {e}")
+            
+            for channel_id in config.MONITOR_CHANNELS:
+                try:
+                    channel = await self.client.get_entity(channel_id)
+                    self.entity_details['channels'][str(channel_id)] = getattr(channel, 'title', f"Channel {channel_id}")
+                    logger.info(f"✅ Loaded channel: {self.entity_details['channels'][str(channel_id)]} ({channel_id})")
+                except Exception as e:
+                    logger.warning(f"⚠️ Could not load channel {channel_id}: {e}")
+            
+            # Save updated details
+            config.save_entity_details(self.entity_details)
+            
+        except Exception as e:
+            logger.error(f"❌ Error loading entity details: {e}")
+            # Initialize with default values if failed
+            self.entity_details = {
+                'groups': {str(id): f"Group {id}" for id in config.MONITOR_GROUPS},
+                'channels': {str(id): f"Channel {id}" for id in config.MONITOR_CHANNELS}
+            }
     
     async def send_notification(self, ca_data, source_info, message_text):
         """Send notification to owner and configured user"""
