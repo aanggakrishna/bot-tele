@@ -98,15 +98,22 @@ async def log_monitor_info():
     print(f"📅 Start Time    : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("📡 Monitoring:")
 
-    dialogs = await client.get_dialogs()
-    dialog_map = {d.entity.id: d.name for d in dialogs if d.is_group or d.is_channel}
-
     for gid in MONITOR_GROUPS:
-        name = dialog_map.get(gid, f"(Unknown group {gid})")
+        try:
+            entity = await client.get_entity(gid)
+            name = getattr(entity, 'title', getattr(entity, 'username', 'Unknown'))
+        except Exception as e:
+            name = f"(Unknown group {gid})"
+            logging.warning(f"Could not get group name for {gid}: {e}")
         print(f"🔸 Group         : {name} ({gid})")
 
     for cid in MONITOR_CHANNELS:
-        name = dialog_map.get(cid, f"(Unknown channel {cid})")
+        try:
+            entity = await client.get_entity(cid)
+            name = getattr(entity, 'title', getattr(entity, 'username', 'Unknown'))
+        except Exception as e:
+            name = f"(Unknown channel {cid})"
+            logging.warning(f"Could not get channel name for {cid}: {e}")
         print(f"🔹 Channel       : {name} ({cid})")
 
     print("❤️ Heartbeat     : Running every 2s")
