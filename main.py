@@ -53,16 +53,21 @@ async def handler_new_channel_message(event):
     await detect_and_forward_ca(event)
 
 # --- Event Handler untuk pin message di GROUP ---
-@client.on(events.MessagePinned(chats=MONITOR_GROUPS))
-async def handler_pinned_message(event):
+@client.on(events.MessageEdited(chats=MONITOR_GROUPS))
+async def handler_pin_group(event):
+    """Handle pinned messages in monitored groups"""
     try:
         group_id = event.chat_id
-        pinned_msg = event.message  # Ini adalah message yang dipin
-        logging.info(f"📌 New pinned message in group {group_id}: {pinned_msg.id}")
-        
-        await detect_and_forward_ca(event)  # event.message sudah isi pinned msg
+        group_name = f"Group {group_id}"
+
+        # Periksa apakah pesan yang diedit adalah pesan yang di-pin
+        if hasattr(event.message, "pinned") and event.message.pinned:
+            logging.info(f"📌 Pinned message detected in {group_name} ({group_id})")
+            await detect_and_forward_ca(event)
+        else:
+            logging.info(f"✏️ Edited message in {group_name} ({group_id}) but not pinned.")
     except Exception as e:
-        logging.error(f"❌ Error handling pinned message: {e}")
+        logging.error(f"❌ Error in handler_pin_group: {e}")
 
 # --- Heartbeat setiap 2 detik ---
 async def heartbeat():
@@ -98,12 +103,10 @@ async def log_monitor_info():
 # --- Main ---
 async def main():
     await client.start()
-    print("🔌 Bot is starting...")
+    print("Bot is running...")
     logging.info("Bot started.")
 
-    await log_monitor_info()
+    # Jalankan periodic pin check
+    asyncio.create_task(periodic_pin_check())
 
-    await asyncio.gather(
-        client.run_until_disconnected(),
-        heartbeat()
-    )
+    await asyncio.gather(client.run_until_disconnected(), heartbeat())
