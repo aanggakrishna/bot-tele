@@ -1,963 +1,459 @@
+import asyncio
 import os
 import re
-import asyncio
-import time
 from datetime import datetime, timedelta
-from telethon import TelegramClient, events
-from telethon.tl.functions.channels import GetFullChannelRequest
-from telethon.tl.functions.messages import GetFullChatRequest
-from dotenv import load_dotenv
+from typing import List, Optional
 from loguru import logger
-import aiohttp
-try:
-    from solana_service import (
-        solana_service, 
-        init_solana_config_from_env, 
-        get_token_price_sol,
-        is_valid_solana_address
-    )
-    from trading_service import (
-        MultiPlatformTradingService, 
-        extract_solana_ca_enhanced
-    )
-    logger.info("✅ All services imported successfully")
-except ImportError as e:
-    logger.error(f"❌ Failed to import services: {e}")
-    exit(1)
+from telethon import TelegramClient, events
+from dotenv import load_dotenv
 
-# Local imports
-from db_manager import init_db, get_db, add_trade, get_active_trades, update_trade_status, get_total_active_trades_count, Trade
+# Import our services
+from solana_service import (
+    init_real_trading, buy_token_solana, sell_token_solana, 
+    get_token_price_sol, is_valid_solana_address, real_trader
+)
+from database import (
+    init_db, get_db, save_trade, get_active_trades, 
+    update_trade_status, get_trade_by_id
+)
 
-from solders.pubkey import Pubkey as PublicKey
-
-# --- Logging Configuration ---
-logger.add("bot.log", rotation="10 MB", level="INFO")
-logger.add("debug.log", rotation="10 MB", level="DEBUG")
-logger.info("🚀 Starting Solana Multi-Platform Trading Bot...")
-
-# --- Load Environment Variables ---
 load_dotenv()
 
-# --- Telegram Configuration ---
-API_ID = int(os.getenv('API_ID'))
-API_HASH = os.getenv('API_HASH')
+# Telegram client
+client = TelegramClient(
+    'trading_bot',
+    int(os.getenv('API_ID')),
+    os.getenv('API_HASH')
+)
+
+# Configuration
 OWNER_ID = int(os.getenv('OWNER_ID'))
+MONITOR_GROUPS = [int(x.strip()) for x in os.getenv('MONITOR_GROUPS', '').split(',') if x.strip()]
+MONITOR_CHANNELS = [int(x.strip()) for x in os.getenv('MONITOR_CHANNELS', '').split(',') if x.strip()]
+MAX_PURCHASES = int(os.getenv('MAX_PURCHASES_ALLOWED', '3'))
 
-# --- Multiple Sources Support ---
-def parse_sources(env_var):
-    """Parse comma-separated sources from environment variable"""
-    sources_str = os.getenv(env_var, '')
-    if not sources_str:
-        return []
-    
-    sources = []
-    for source in sources_str.split(','):
-        source = source.strip()
-        if source:
-            try:
-                # Convert to int (can be positive or negative)
-                source_id = int(source)
-                sources.append(source_id)
-            except ValueError:
-                logger.warning(f"⚠️ Invalid source ID: {source}")
-    
-    return sources
-
-# Support for multiple groups and channels
-MONITOR_GROUPS = parse_sources('MONITOR_GROUPS')  # Comma-separated group IDs
-MONITOR_CHANNELS = parse_sources('MONITOR_CHANNELS')  # Comma-separated channel IDs
-
-# Legacy support - if old GROUP_ID exists, add it to groups
-if os.getenv('GROUP_ID'):
-    legacy_group_id = int(os.getenv('GROUP_ID'))
-    if legacy_group_id not in MONITOR_GROUPS:
-        MONITOR_GROUPS.append(legacy_group_id)
-
-# Combine all sources
-ALL_MONITOR_SOURCES = MONITOR_GROUPS + MONITOR_CHANNELS
-
-if not ALL_MONITOR_SOURCES:
-    logger.error("❌ No monitoring sources configured! Please set MONITOR_GROUPS and/or MONITOR_CHANNELS in .env")
-    exit(1)
-
-logger.info(f"📺 Configured to monitor {len(MONITOR_GROUPS)} group(s) and {len(MONITOR_CHANNELS)} channel(s)")
-
-# --- Solana Configuration ---
-RPC_URL = os.getenv('RPC_URL', 'https://api.mainnet-beta.solana.com')
-SOLANA_PRIVATE_KEY_BASE58 = os.getenv('SOLANA_PRIVATE_KEY_BASE58')
-AMOUNT_TO_BUY_SOL = float(os.getenv('AMOUNT_TO_BUY_SOL', '0.01'))
-SLIPPAGE_BPS = int(os.getenv('SLIPPAGE_BPS', '300'))
-STOP_LOSS_PERCENT = float(os.getenv('STOP_LOSS_PERCENT', '0.20'))
-TAKE_PROFIT_PERCENT = float(os.getenv('TAKE_PROFIT_PERCENT', '0.50'))
-MAX_PURCHASES_ALLOWED = int(os.getenv('MAX_PURCHASES_ALLOWED', '2'))
-JUPITER_API_URL = os.getenv('JUPITER_API_URL', 'https://quote-api.jup.ag/v6')
-
-# --- Initialize Services ---
-logger.info("Initializing Solana service...")
-init_success = init_solana_config_from_env()
-if not init_success:
-    logger.warning("⚠️ Solana service initialization had issues, continuing in monitoring mode")
-
-logger.info("Initializing multi-platform trading service...")
-multi_platform_service = MultiPlatformTradingService(solana_service)
-
-
-# Initialize Telegram Client
-client = TelegramClient('solana_bot_multi', API_ID, API_HASH)
-
-# --- Helper Functions ---
-async def get_source_info(source_id):
-    """Get source information (group or channel)"""
-    try:
-        # Convert to absolute value if needed
-        actual_source_id = -abs(source_id) if source_id > 0 else source_id
+class RealTradingBot:
+    def __init__(self):
+        self.active_trades = {}
+        self.price_cache = {}
         
-        # Get entity
-        source_entity = await client.get_entity(actual_source_id)
-        
-        # Determine source type
-        source_type = "Unknown"
-        if hasattr(source_entity, 'megagroup') and source_entity.megagroup:
-            source_type = "Supergroup"
-        elif hasattr(source_entity, 'broadcast') and source_entity.broadcast:
-            source_type = "Channel"
-        elif hasattr(source_entity, 'chat'):
-            source_type = "Group"
-        
-        # Safely get participants count
-        participants_count = getattr(source_entity, 'participants_count', None)
-        if participants_count is None:
-            participants_count = 0
-        
-        source_info = {
-            'id': actual_source_id,
-            'title': getattr(source_entity, 'title', 'Unknown'),
-            'username': getattr(source_entity, 'username', None),
-            'participants_count': participants_count,
-            'type': source_type
-        }
-        
-        return source_info
-        
-    except Exception as e:
-        logger.error(f"❌ Error getting source info for {source_id}: {e}")
-        return {
-            'id': source_id,
-            'title': 'Unknown',
-            'username': None,
-            'participants_count': 0,
-            'type': 'Error'
-        }
-
-async def get_all_sources_info():
-    """Get information for all monitored sources"""
-    all_sources_info = []
-    
-    for source_id in ALL_MONITOR_SOURCES:
-        source_info = await get_source_info(source_id)
-        all_sources_info.append(source_info)
-        
-    return all_sources_info
-
-async def send_dm_to_owner(message):
-    """Send direct message to bot owner"""
-    try:
-        await client.send_message(OWNER_ID, message, parse_mode='markdown')
-        logger.info(f"📱 Sent DM to owner: {message[:100]}...")
-    except Exception as e:
-        logger.error(f"❌ Error sending DM to owner: {e}")
-
-# ... keep all other helper functions (test_jupiter_api, debug_solana_service) ...
-
-async def test_jupiter_api():
-    """Test Jupiter API connectivity"""
-    try:
-        logger.info("Testing Jupiter API connectivity...")
-        jupiter_url = os.getenv('JUPITER_API_URL', 'https://quote-api.jup.ag/v6')
-        
-        async with aiohttp.ClientSession() as session:
-            # Test simple quote request
-            url = f"{jupiter_url}/quote"
-            params = {
-                'inputMint': 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263',  # BONK
-                'outputMint': 'So11111111111111111111111111111111111111112',   # WSOL
-                'amount': 1000000,  # 1 BONK (6 decimals)
-                'slippageBps': 500
-            }
-            
-            async with session.get(url, params=params, timeout=10) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    logger.info(f"✅ Jupiter API is working - Quote: {data.get('outAmount', 'unknown')} lamports")
-                    return True
-                else:
-                    logger.warning(f"⚠️ Jupiter API returned status: {response.status}")
-                    return False
-                    
-    except Exception as e:
-        logger.error(f"❌ Jupiter API test failed: {e}")
-        return False
-
-async def debug_solana_service():
-    """Debug function to test solana service"""
-    try:
-        # Test with a known valid token address
-        test_address = "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263"  # BONK token
-        
-        logger.info(f"Testing solana service with token address: {test_address}")
-        
-        # Test address validation
-        if not is_valid_solana_address(test_address):
-            logger.error(f"❌ Test address validation failed: {test_address}")
-            return False
-        
-        # Skip the price test if wallet is not initialized
-        if not solana_service.keypair:
-            logger.info("⚠️ Wallet not initialized - skipping price test")
-            logger.info("✅ Solana service initialized in monitoring mode")
-            return True
-        
-        # Test price fetch only if wallet is available
-        try:
-            price = await get_token_price_sol(test_address)
-            if price:
-                logger.info(f"✅ Price fetch successful: {price} SOL per token")
-            else:
-                logger.warning("⚠️ Could not fetch price")
-        except Exception as price_e:
-            logger.warning(f"⚠️ Price test failed: {price_e}")
-        
-        return True
-        
-    except Exception as e:
-        logger.error(f"Debug test failed: {e}")
-        return False
-
-# --- Background Task Functions ---
-async def dm_heartbeat():
-    """Send heartbeat DM to owner"""
-    db = next(get_db())
-    try:
-        active_count = get_total_active_trades_count(db)
-        
-        # Get fresh sources info for heartbeat
-        sources_info = await get_all_sources_info()
-        
-        heartbeat_message = (
-            f"💓 **Bot Heartbeat**\n\n"
-            f"Status: `Online`\n"
-            f"📊 Active trades: `{active_count}/{MAX_PURCHASES_ALLOWED}`\n"
-            f"⏰ Time: `{datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC`\n\n"
-            f"📺 **Monitoring Sources:**\n"
-        )
-        
-        for source_info in sources_info:
-            source_emoji = {
-                'Channel': '📢',
-                'Supergroup': '👥',
-                'Group': '👥',
-                'Unknown': '❓'
-            }.get(source_info['type'], '📺')
-            
-            heartbeat_message += f"{source_emoji} `{source_info['title']}` ({source_info['type']})\n"
-        
-        await send_dm_to_owner(heartbeat_message)
-        logger.info(f"📱 Sent DM Heartbeat for {len(sources_info)} sources")
-    except Exception as e:
-        logger.error(f"❌ Error in DM heartbeat: {e}")
-    finally:
-        db.close()
-
-# ... keep all other background task functions (monitor_trades_and_sell, background_tasks) ...
-
-# Replace the monitor_trades_and_sell function in main.py
-
-async def monitor_trades_and_sell():
-    """Monitor active trades and execute sell logic with better error handling"""
-    db = next(get_db())
-    try:
-        active_trades = get_active_trades(db)
-        if not active_trades:
-            return
-
-        logger.info(f"📊 Monitoring {len(active_trades)} active trades...")
-
-        for trade in active_trades:
-            token_mint_address = trade.token_mint_address
-            amount_bought_token = trade.amount_bought_token
-            buy_price_sol = trade.buy_price_sol
-            buy_timestamp = trade.buy_timestamp
-            wallet_token_account = trade.wallet_token_account
-            platform = trade.platform or 'unknown'
-
-            logger.debug(f"🔍 Checking trade: {token_mint_address} ({platform})")
-
-            # Validate token address before processing
-            try:
-                # Use the standalone validation function
-                if not is_valid_solana_address(token_mint_address):
-                    logger.error(f"❌ Invalid token address in database: {token_mint_address}")
-                    # Mark trade as error and skip
-                    update_trade_status(db, trade.id, "error", 0, "invalid_address")
-                    continue
-                    
-            except Exception as e:
-                logger.error(f"❌ Error validating token address {token_mint_address}: {e}")
-                continue
-
-            # Rest of the function stays the same...
-            # Get current price with proper error handling
-            try:
-                current_token_price_sol = await get_token_price_sol(token_mint_address)
-                if current_token_price_sol is None:
-                    logger.warning(f"⚠️ Could not fetch current price for {token_mint_address}. Skipping.")
-                    continue
-            except Exception as e:
-                logger.error(f"❌ Error fetching price for {token_mint_address}: {e}")
-                continue
-
-            # Calculate profit/loss percentage
-            if buy_price_sol <= 0:
-                logger.warning(f"⚠️ Invalid buy price for {token_mint_address}: {buy_price_sol}")
-                continue
-                
-            profit_loss_percent = (current_token_price_sol - buy_price_sol) / buy_price_sol
-
-            logger.info(f"📈 {platform.upper()} {token_mint_address[:16]}...: Buy={buy_price_sol:.8f} SOL, Current={current_token_price_sol:.8f} SOL, P/L={profit_loss_percent*100:.2f}%")
-
-            should_sell = False
-            sell_reason = ""
-
-            # 1. Take Profit Check
-            if profit_loss_percent >= TAKE_PROFIT_PERCENT:
-                should_sell = True
-                sell_reason = f"Take Profit ({TAKE_PROFIT_PERCENT*100:.1f}%)"
-                logger.info(f"🎯 Take profit triggered for {token_mint_address}: {profit_loss_percent*100:.2f}% >= {TAKE_PROFIT_PERCENT*100:.1f}%")
-            
-            # 2. Stop Loss Check
-            elif profit_loss_percent <= -STOP_LOSS_PERCENT:
-                should_sell = True
-                sell_reason = f"Stop Loss ({STOP_LOSS_PERCENT*100:.1f}%)"
-                logger.info(f"🛑 Stop loss triggered for {token_mint_address}: {profit_loss_percent*100:.2f}% <= -{STOP_LOSS_PERCENT*100:.1f}%")
-            
-            # 3. Time-based Sell (1 day with no significant movement)
-            elif (datetime.utcnow() - buy_timestamp) > timedelta(days=1):
-                # Define "significant movement" - e.g., price hasn't moved +/- 5% in 24h
-                if abs(profit_loss_percent) < 0.05:  # Less than 5% movement
-                    should_sell = True
-                    sell_reason = "Time-based Sell (1 day, no significant movement)"
-                    logger.info(f"⏰ Time-based sell triggered for {token_mint_address}: 1 day elapsed, minimal movement")
-
-            if should_sell:
-                logger.warning(f"🚨 Initiating sell for {token_mint_address} due to: {sell_reason}")
-                
-                platform_emoji = {
-                    'pumpfun': '🚀',
-                    'moonshot': '🌙', 
-                    'raydium': '⚡',
-                    'jupiter': '🪐',
-                    'generic': '🔄'
-                }.get(platform, '🔄')
-                
-                await send_dm_to_owner(
-                    f"🚨 **Initiating Sell**\n\n"
-                    f"{platform_emoji} Platform: `{platform.upper()}`\n"
-                    f"🪙 Token: `{token_mint_address[:16]}...`\n"
-                    f"📊 Reason: `{sell_reason}`\n"
-                    f"📈 P/L: `{profit_loss_percent*100:.2f}%`"
-                )
-
-                try:
-                    sell_result = await multi_platform_service.sell_token_multi_platform(
-                        token_mint_address, amount_bought_token, wallet_token_account, platform
-                    )
-
-                    if sell_result:
-                        # Determine status based on sell reason
-                        if "Profit" in sell_reason:
-                            status = "sold_profit"
-                        elif "Loss" in sell_reason:
-                            status = "sold_sl"
-                        else:
-                            status = "sold_time"
-
-                        updated_trade = update_trade_status(
-                            db,
-                            trade.id,
-                            status=status,
-                            sell_price_sol=sell_result['sell_price_sol'],
-                            sell_tx_signature=sell_result['sell_tx_signature']
-                        )
-                        
-                        # Calculate final profit/loss
-                        final_profit_percent = ((updated_trade.sell_price_sol - updated_trade.buy_price_sol) / updated_trade.buy_price_sol) * 100 if updated_trade.buy_price_sol else 0
-                        profit_sol = (updated_trade.sell_price_sol - updated_trade.buy_price_sol) * amount_bought_token if updated_trade.sell_price_sol and updated_trade.buy_price_sol else 0
-
-                        explorer_url = f"https://solscan.io/tx/{sell_result['sell_tx_signature']}"
-                        if 'devnet' in RPC_URL:
-                            explorer_url += "?cluster=devnet"
-
-                        await send_dm_to_owner(
-                            f"✅ **Sell Successful!**\n\n"
-                            f"{platform_emoji} Platform: `{platform.upper()}`\n"
-                            f"🪙 Token: `{token_mint_address[:16]}...`\n"
-                            f"📊 Reason: `{sell_reason}`\n"
-                            f"💰 Sell Price: `{sell_result['sell_price_sol']:.8f} SOL`\n"
-                            f"📈 Final P/L: `{final_profit_percent:.2f}%`\n"
-                            f"💎 SOL P/L: `{profit_sol:.6f} SOL`\n"
-                            f"🔗 [View Transaction]({explorer_url})\n"
-                            f"📊 Active Trades: `{get_total_active_trades_count(db)}/{MAX_PURCHASES_ALLOWED}`"
-                        )
-                        logger.info(f"✅ Successfully sold {token_mint_address}. Status: {updated_trade.status}")
-                    else:
-                        await send_dm_to_owner(
-                            f"❌ **Sell Failed**\n\n"
-                            f"{platform_emoji} Platform: `{platform.upper()}`\n"
-                            f"🪙 Token: `{token_mint_address[:16]}...`\n"
-                            f"Check bot logs for details."
-                        )
-                        logger.error(f"❌ Failed to sell token: {token_mint_address}")
-                        
-                except Exception as e:
-                    logger.error(f"❌ Error selling {token_mint_address}: {e}", exc_info=True)
-                    await send_dm_to_owner(f"🚨 **Sell Error**\n\nToken: `{token_mint_address[:16]}...`\nError: `{str(e)[:200]}`")
-
-    except Exception as e:
-        logger.error(f"❌ Error in monitor_trades_and_sell: {e}", exc_info=True)
-    finally:
-        db.close()
-
-async def background_tasks():
-    """Run background tasks manually with asyncio"""
-    async def periodic_monitoring():
-        """Monitor trades every 30 seconds"""
-        while True:
-            try:
-                await monitor_trades_and_sell()
-            except Exception as e:
-                logger.error(f"❌ Error in periodic monitoring: {e}")
-            await asyncio.sleep(30)  # 30 seconds
-    
-    async def periodic_heartbeat():
-        """Send heartbeat every 30 minutes"""
-        while True:
-            try:
-                await dm_heartbeat()
-            except Exception as e:
-                logger.error(f"❌ Error in periodic heartbeat: {e}")
-            await asyncio.sleep(1800)  # 30 minutes
-    
-    # Start both tasks concurrently
-    await asyncio.gather(
-        periodic_monitoring(),
-        periodic_heartbeat()
-    )
-
-@client.on(events.NewMessage)
-async def new_message_handler(event):
-    """Handle new messages in monitored channels (not groups)"""
-    
-    # Only process if it has chat_id
-    if not hasattr(event, 'chat_id'):
-        return
-    
-    # Get basic info for logging
-    log_chat_id = event.chat_id
-    log_source_name = "Unknown Channel"
-    log_source_type = "Unknown"
-    is_monitored_channel = False
-    
-    try:
-        chat_entity = await event.get_chat()
-        if chat_entity and hasattr(chat_entity, 'title'):
-            log_source_name = chat_entity.title
-            
-            # Only process CHANNELS (not groups) for new messages
-            if hasattr(chat_entity, 'broadcast') and chat_entity.broadcast:
-                log_source_type = "Channel"
-                # Check if it's in our monitored channels
-                actual_chat_id = -abs(event.chat_id) if event.chat_id > 0 else event.chat_id
-                if actual_chat_id in MONITOR_CHANNELS:
-                    is_monitored_channel = True
-    except Exception as e:
-        logger.debug(f"Error getting chat info: {e}")
-        return
-
-    # Skip if not a monitored channel
-    if not is_monitored_channel:
-        return
-
-    # Skip if message is too old (more than 2 minutes to avoid processing old messages)
-    if hasattr(event.message, 'date'):
-        from datetime import datetime, timezone
-        message_age = (datetime.now(timezone.utc) - event.message.date).total_seconds()
-        if message_age > 120:  # 2 minutes
-            logger.debug(f"⏭️ Skipping old message from {log_source_name} (age: {message_age:.0f}s)")
-            return
-
-    # Get message text
-    message_text = None
-    if hasattr(event.message, 'message') and event.message.message:
-        message_text = event.message.message
-    elif hasattr(event.message, 'text') and event.message.text:
-        message_text = event.message.text
-    
-    if not message_text:
-        logger.debug(f"⏭️ No text content in message from {log_source_name}")
-        return
-
-    logger.info(f"📢 New message from channel '{log_source_name}': {message_text[:100]}...")
-    
-    # Send notification to owner
-    await send_dm_to_owner(f"📢 **New Channel Message**\n\n📢 Channel: `{log_source_name}`\nContent: `{message_text[:200]}...`")
-
-    # Extract Solana CA using enhanced detection
-    ca = extract_solana_ca_enhanced(message_text)
-    if ca:
-        logger.info(f"🪙 Detected potential Solana CA from channel '{log_source_name}': {ca}")
-        await send_dm_to_owner(f"🔍 **Solana CA Detected**\n\n📢 Channel: `{log_source_name}`\nToken: `{ca}`\nProcessing purchase...")
-
-        db = next(get_db())
-        try:
-            # Check purchase limits
-            active_trades_count = get_total_active_trades_count(db)
-            if active_trades_count >= MAX_PURCHASES_ALLOWED:
-                await send_dm_to_owner(
-                    f"⛔ **Purchase Limit Reached**\n\n"
-                    f"Active trades: {active_trades_count}/{MAX_PURCHASES_ALLOWED}\n"
-                    f"Cannot buy more until existing positions are sold."
-                )
-                logger.warning("Purchase limit reached. Skipping purchase.")
-                return
-
-            # Check if token already exists
-            existing_trade = db.query(Trade).filter(Trade.token_mint_address == ca).first()
-            if existing_trade and existing_trade.status == "active":
-                await send_dm_to_owner(
-                    f"⚠️ **Token Already Active**\n\n"
-                    f"Token: `{ca}`\n"
-                    f"Platform: `{existing_trade.platform or 'Unknown'}`\n"
-                    f"Status: `{existing_trade.status}`"
-                )
-                logger.warning(f"Token {ca} is already an active trade. Skipping purchase.")
-                return
-
-            # --- Initiate Multi-Platform Buy Logic ---
-            logger.info(f"🚀 Attempting to buy token from channel: {ca}")
-            await send_dm_to_owner(f"🔄 **Starting Purchase**\n\nToken: `{ca}`\nAmount: `{AMOUNT_TO_BUY_SOL} SOL`\nSource: 📢 `{log_source_name}`")
-            
-            buy_result = await multi_platform_service.buy_token_multi_platform(ca, message_text)
-
-            if buy_result:
-                # Add trade to database with platform info
-                add_trade(
-                    db,
-                    token_mint_address=buy_result['token_mint_address'],
-                    buy_price_sol=buy_result['buy_price_sol'],
-                    amount_bought_token=buy_result['amount_bought_token'],
-                    wallet_token_account=buy_result['wallet_token_account'],
-                    buy_tx_signature=buy_result['buy_tx_signature'],
-                    platform=buy_result.get('platform', 'unknown'),
-                    bonding_curve_complete=buy_result.get('bonding_curve_complete')
-                )
-                
-                # Send success notification
-                platform_emoji = {
-                    'pumpfun': '🚀',
-                    'moonshot': '🌙', 
-                    'raydium': '⚡',
-                    'jupiter': '🪐',
-                    'generic': '🔄'
-                }.get(buy_result.get('platform', 'generic'), '🔄')
-                
-                explorer_url = f"https://solscan.io/tx/{buy_result['buy_tx_signature']}"
-                if 'devnet' in RPC_URL:
-                    explorer_url += "?cluster=devnet"
-                
-                await send_dm_to_owner(
-                    f"✅ **Purchase Successful!**\n\n"
-                    f"{platform_emoji} Platform: `{buy_result.get('platform', 'Unknown').upper()}`\n"
-                    f"🪙 Token: `{buy_result['token_mint_address']}`\n"
-                    f"💰 Amount: `{buy_result['amount_bought_token']:.6f} tokens`\n"
-                    f"💎 Price: `{buy_result['buy_price_sol']:.8f} SOL`\n"
-                    f"📍 Source: 📢 `{log_source_name}`\n"
-                    f"🔗 [View Transaction]({explorer_url})\n"
-                    f"📊 Active Trades: `{get_total_active_trades_count(db)}/{MAX_PURCHASES_ALLOWED}`"
-                )
-                logger.info(f"✅ Successfully bought {ca} from {buy_result.get('platform', 'unknown')}. Source: {log_source_name}")
-            else:
-                await send_dm_to_owner(
-                    f"❌ **Purchase Failed**\n\n"
-                    f"Token: `{ca}`\n"
-                    f"Source: 📢 `{log_source_name}`\n"
-                    f"Check bot logs for details."
-                )
-                logger.error(f"❌ Failed to buy token: {ca}")
-                
-        except Exception as e:
-            logger.error(f"❌ Error in buy process: {e}", exc_info=True)
-            await send_dm_to_owner(f"🚨 **Error in Purchase Process**\n\nToken: `{ca}`\nSource: 📢 `{log_source_name}`\nError: `{str(e)[:200]}`")
-        finally:
-            db.close()
-    else:
-        logger.debug(f"ℹ️ No valid Solana CA found in channel message from '{log_source_name}'")
-
-# --- Enhanced Telegram Event Handler for Multiple Sources ---
-@client.on(events.ChatAction)
-async def pinned_message_handler(event):
-    """Handle pinned message events in target sources (groups and channels)"""
-    
-    # Event logging variables
-    is_target_pin_event = False
-    log_chat_id = "N/A"
-    log_event_description = "Unknown ChatAction"
-    log_content_preview = "N/A"
-    log_source_name = "Unknown Source"
-    log_source_type = "Unknown"
-
-    if hasattr(event, 'chat_id'):
-        log_chat_id = event.chat_id
-        try:
-            chat_entity_for_log = await event.get_chat()
-            if chat_entity_for_log and hasattr(chat_entity_for_log, 'title'):
-                log_source_name = chat_entity_for_log.title
-                
-                # Determine source type
-                if hasattr(chat_entity_for_log, 'megagroup') and chat_entity_for_log.megagroup:
-                    log_source_type = "Supergroup"
-                elif hasattr(chat_entity_for_log, 'broadcast') and chat_entity_for_log.broadcast:
-                    log_source_type = "Channel"
-                else:
-                    log_source_type = "Group"
-        except Exception:
-            pass
-
-    # Check if this is a pin event in any of our target sources
-    if hasattr(event, 'new_pin') and event.new_pin:
-        log_event_description = "Pin Action"
-        if hasattr(event, 'action_message') and event.action_message and hasattr(event.action_message, 'message'):
-            log_content_preview = str(event.action_message.message)[:100]
-        
-        # Check if it's any of our monitored sources
-        if hasattr(event, 'chat_id'):
-            actual_chat_id = -abs(event.chat_id) if event.chat_id > 0 else event.chat_id
-            if actual_chat_id in ALL_MONITOR_SOURCES:
-                is_target_pin_event = True
-
-    # Enhanced logging with source info
-    logger.debug(f"📝 Processing event - {log_source_type}: '{log_source_name}' (ID: {log_chat_id}), Event Type: {log_event_description}")
-
-    if not is_target_pin_event:
-        logger.debug(f"⏭️ Skipping event: Not a pin action in monitored sources")
-        return
-
-    logger.info(f"📌 Pin event detected in {log_source_type}: '{log_source_name}' (ID: {log_chat_id})")
-
-    # --- Get Pinned Message Content (Same logic as before but with enhanced logging) ---
-    message_text = None
-    
-    # Method 1: Try to get from event.pinned_message
-    if hasattr(event, 'pinned_message') and event.pinned_message:
-        actual_pinned_message_object = event.pinned_message
-        
-        if hasattr(actual_pinned_message_object, 'message') and actual_pinned_message_object.message:
-            message_text = actual_pinned_message_object.message
-            logger.info("✅ Retrieved pinned message from event.pinned_message")
-        elif hasattr(actual_pinned_message_object, 'text') and actual_pinned_message_object.text:
-            message_text = actual_pinned_message_object.text
-            logger.info("✅ Retrieved pinned message from event.pinned_message (text)")
-    
-    # Method 2: Fallback - get recent pinned messages (PRIORITIZED)
-    if not message_text:
-        logger.info(f"🔍 Fetching recent messages from {log_source_type}: {log_source_name}...")
-        
-        try:
-            recent_messages = await client.get_messages(log_chat_id, limit=100)
-            
-            for msg in recent_messages:
-                if hasattr(msg, 'pinned') and msg.pinned:
-                    if hasattr(msg, 'message') and msg.message:
-                        message_text = msg.message
-                        logger.info(f"✅ Found pinned message in recent messages from {log_source_type}")
-                        break
-                    elif hasattr(msg, 'text') and msg.text:
-                        message_text = msg.text
-                        logger.info(f"✅ Found pinned message in recent messages from {log_source_type}")
-                        break
-                        
-        except Exception as e:
-            logger.error(f"❌ Error fetching recent pinned messages from {log_source_type}: {e}")
-    
-    # Method 3: Manual fetch via chat info (as backup)
-    if not message_text:
-        logger.warning(f"⚠️ Trying manual fetch from {log_source_type} info for {log_chat_id}")
-        
-        try:
-            chat_entity = await client.get_entity(log_chat_id)
-            
-            # Handle different chat types
-            if hasattr(chat_entity, 'megagroup') or hasattr(chat_entity, 'broadcast'):
-                # It's a channel (supergroup or broadcast)
-                full_chat_info = await client(GetFullChannelRequest(chat_entity))
-                pinned_msg_id = getattr(full_chat_info.full_chat, 'pinned_msg_id', None)
-            else:
-                # It's a regular group
-                full_chat_info = await client(GetFullChatRequest(chat_entity.id))
-                pinned_msg_id = getattr(full_chat_info.full_chat, 'pinned_msg_id', None)
-            
-            if pinned_msg_id:
-                logger.info(f"🔍 Found pinned message ID: {pinned_msg_id}")
-                
-                pinned_messages = await client.get_messages(log_chat_id, ids=[pinned_msg_id])
-                if pinned_messages and len(pinned_messages) > 0:
-                    pinned_msg = pinned_messages[0]
-                    if hasattr(pinned_msg, 'message') and pinned_msg.message:
-                        message_text = pinned_msg.message
-                        logger.info(f"✅ Retrieved pinned message via manual fetch from {log_source_type}")
-                    elif hasattr(pinned_msg, 'text') and pinned_msg.text:
-                        message_text = pinned_msg.text
-                        logger.info(f"✅ Retrieved pinned message via manual fetch from {log_source_type}")
-            
-        except Exception as e:
-            logger.error(f"❌ Error in manual fetch from {log_source_type}: {e}")
-    
-    # Final check
-    if not message_text:
-        logger.error(f"❌ FAILED to retrieve pinned message text from {log_source_type}: {log_source_name}")
-        await send_dm_to_owner(f"⚠️ **Pin Event Detected**\n\n{log_source_type}: `{log_source_name}`\n❌ Could not retrieve message content. Please check manually.")
-        return
-
-    # Continue with normal logic
-    logger.info(f"📄 New Pinned Message detected from {log_source_type}: {message_text[:200]}...")
-    
-    source_emoji = {
-        'Channel': '📢',
-        'Supergroup': '👥',
-        'Group': '👥'
-    }.get(log_source_type, '📺')
-    
-    await send_dm_to_owner(f"📌 **New Pinned Message**\n\n{source_emoji} {log_source_type}: `{log_source_name}`\nContent: `{message_text[:200]}...`")
-
-    # Extract Solana CA using enhanced detection
-    ca = extract_solana_ca_enhanced(message_text)
-    if ca:
-        logger.info(f"🪙 Detected potential Solana CA from {log_source_type} '{log_source_name}': {ca}")
-        await send_dm_to_owner(f"🔍 **Solana CA Detected**\n\n{source_emoji} {log_source_type}: `{log_source_name}`\nToken: `{ca}`\nProcessing purchase...")
-
-        db = next(get_db())
-        try:
-            # Check purchase limits
-            active_trades_count = get_total_active_trades_count(db)
-            if active_trades_count >= MAX_PURCHASES_ALLOWED:
-                await send_dm_to_owner(
-                    f"⛔ **Purchase Limit Reached**\n\n"
-                    f"Active trades: {active_trades_count}/{MAX_PURCHASES_ALLOWED}\n"
-                    f"Cannot buy more until existing positions are sold."
-                )
-                logger.warning("Purchase limit reached. Skipping purchase.")
-                return
-
-            # Check if token already exists
-            existing_trade = db.query(Trade).filter(Trade.token_mint_address == ca).first()
-            if existing_trade and existing_trade.status == "active":
-                await send_dm_to_owner(
-                    f"⚠️ **Token Already Active**\n\n"
-                    f"Token: `{ca}`\n"
-                    f"Platform: `{existing_trade.platform or 'Unknown'}`\n"
-                    f"Status: `{existing_trade.status}`"
-                )
-                logger.warning(f"Token {ca} is already an active trade. Skipping purchase.")
-                return
-
-            # --- Initiate Multi-Platform Buy Logic ---
-            logger.info(f"🚀 Attempting to buy token: {ca}")
-            await send_dm_to_owner(f"🔄 **Starting Purchase**\n\nToken: `{ca}`\nAmount: `{AMOUNT_TO_BUY_SOL} SOL`\nSource: {source_emoji} `{log_source_name}`")
-            
-            buy_result = await multi_platform_service.buy_token_multi_platform(ca, message_text)
-
-            if buy_result:
-                # Add trade to database with platform info
-                add_trade(
-                    db,
-                    token_mint_address=buy_result['token_mint_address'],
-                    buy_price_sol=buy_result['buy_price_sol'],
-                    amount_bought_token=buy_result['amount_bought_token'],
-                    wallet_token_account=buy_result['wallet_token_account'],
-                    buy_tx_signature=buy_result['buy_tx_signature'],
-                    platform=buy_result.get('platform', 'unknown'),
-                    bonding_curve_complete=buy_result.get('bonding_curve_complete')
-                )
-                
-                # Send success notification
-                platform_emoji = {
-                    'pumpfun': '🚀',
-                    'moonshot': '🌙', 
-                    'raydium': '⚡',
-                    'jupiter': '🪐',
-                    'generic': '🔄'
-                }.get(buy_result.get('platform', 'generic'), '🔄')
-                
-                explorer_url = f"https://solscan.io/tx/{buy_result['buy_tx_signature']}"
-                if 'devnet' in RPC_URL:
-                    explorer_url += "?cluster=devnet"
-                
-                await send_dm_to_owner(
-                    f"✅ **Purchase Successful!**\n\n"
-                    f"{platform_emoji} Platform: `{buy_result.get('platform', 'Unknown').upper()}`\n"
-                    f"🪙 Token: `{buy_result['token_mint_address']}`\n"
-                    f"💰 Amount: `{buy_result['amount_bought_token']:.6f} tokens`\n"
-                    f"💎 Price: `{buy_result['buy_price_sol']:.8f} SOL`\n"
-                    f"📍 Source: {source_emoji} `{log_source_name}`\n"
-                    f"🔗 [View Transaction]({explorer_url})\n"
-                    f"📊 Active Trades: `{get_total_active_trades_count(db)}/{MAX_PURCHASES_ALLOWED}`"
-                )
-                logger.info(f"✅ Successfully bought {ca} from {buy_result.get('platform', 'unknown')}. Source: {log_source_name}")
-            else:
-                await send_dm_to_owner(
-                    f"❌ **Purchase Failed**\n\n"
-                    f"Token: `{ca}`\n"
-                    f"Source: {source_emoji} `{log_source_name}`\n"
-                    f"Check bot logs for details."
-                )
-                logger.error(f"❌ Failed to buy token: {ca}")
-                
-        except Exception as e:
-            logger.error(f"❌ Error in buy process: {e}", exc_info=True)
-            await send_dm_to_owner(f"🚨 **Error in Purchase Process**\n\nToken: `{ca}`\nSource: {source_emoji} `{log_source_name}`\nError: `{str(e)[:200]}`")
-        finally:
-            db.close()
-    else:
-        logger.info(f"ℹ️ No valid Solana CA found in pinned message from {log_source_type}: '{log_source_name}'")
-        await send_dm_to_owner(f"ℹ️ **No Solana CA Found**\n\n{source_emoji} {log_source_type}: `{log_source_name}`\nNo valid contract address found in the pinned message.")
-
-# --- Main Function ---
-async def main():
-    """Main function"""
-    try:
-        logger.info("🚀 Starting Solana Multi-Source Trading Bot...")
-        
-        # Test Jupiter API first
-        jupiter_working = await test_jupiter_api()
-        if not jupiter_working:
-            logger.warning("⚠️ Jupiter API test failed, but continuing...")
+    async def start(self):
+        """Start the real trading bot"""
+        logger.info("🚀 Starting Real Trading Bot...")
         
         # Initialize database
         init_db()
-        logger.info("✅ Database initialized")
         
-        # Initialize Solana service - FIXED VERSION
-        logger.info("🔧 Initializing Solana service...")
-        try:
-            # Call the module-level function, not a method on solana_service object
-            init_success = init_solana_config_from_env()
-            if init_success:
-                logger.info("✅ Solana service initialized successfully")
+        # Initialize real trading
+        success = await init_real_trading()
+        if not success:
+            logger.error("❌ Failed to initialize real trading!")
+            return
+        
+        # Show wallet info
+        if real_trader.keypair:
+            balance = await real_trader.get_wallet_balance()
+            logger.info(f"💎 Wallet: {real_trader.keypair.pubkey()}")
+            logger.info(f"💰 Balance: {balance:.6f} SOL")
+            
+            if real_trader.enable_real_trading:
+                logger.warning("🔴 REAL TRADING ENABLED - MONEY AT RISK!")
             else:
-                logger.warning("⚠️ Solana service initialization returned False but continuing...")
-        except Exception as e:
-            logger.error(f"❌ Solana service initialization failed: {e}")
-            logger.info("🔄 Continuing in monitoring mode only...")
+                logger.info("🟡 MOCK TRADING MODE")
         
-        # Test Solana service
-        logger.info("🧪 Testing Solana service...")
-        try:
-            solana_test_success = await debug_solana_service()
-            if solana_test_success:
-                logger.info("✅ Solana service test passed")
-            else:
-                logger.warning("⚠️ Solana service test failed but continuing...")
-        except Exception as e:
-            logger.error(f"❌ Solana service test error: {e}")
-        
-        # Start the client
-        logger.info("📡 Starting Telegram client...")
+        # Start Telegram client
         await client.start()
-        logger.info("✅ Telegram client started")
+        logger.info("📱 Telegram client started")
         
-        # Get me info
-        me = await client.get_me()
-        logger.info(f"👤 Logged in as: {me.first_name} (@{me.username})")
+        # Start monitoring task
+        asyncio.create_task(self.monitor_trades())
         
-        # Get all sources information
-        logger.info("🔍 Getting sources information...")
-        sources_info = await get_all_sources_info()
+        # Setup message handlers
+        self.setup_handlers()
         
-        logger.info("🎯 Bot is running and monitoring...")
-        logger.info(f"📺 Monitoring {len(sources_info)} sources:")
+        logger.info("✅ Bot is running and monitoring...")
+        await client.run_until_disconnected()
+    
+    def setup_handlers(self):
+        """Setup Telegram message handlers"""
         
-        for source_info in sources_info:
-            source_emoji = {
-                'Channel': '📢',
-                'Supergroup': '👥',
-                'Group': '👥',
-                'Unknown': '❓'
-            }.get(source_info['type'], '📺')
-            
-            logger.info(f"  {source_emoji} {source_info['type']}: {source_info['title']} (ID: {source_info['id']})")
-            
-            if source_info.get('username'):
-                logger.info(f"    🔗 @{source_info['username']}")
-            
-            participants_count = source_info.get('participants_count', 0)
-            if participants_count and participants_count > 0:
-                logger.info(f"    👥 {participants_count:,} members")
-        
-        # Send startup notification to owner
-        startup_message = (
-            f"🚀 **Multi-Source Bot Started!**\n\n"
-            f"👤 Bot Account: `{me.first_name}`\n"
-            f"📊 Max Trades: `{MAX_PURCHASES_ALLOWED}`\n"
-            f"💰 Buy Amount: `{AMOUNT_TO_BUY_SOL} SOL`\n"
-            f"📈 Take Profit: `{TAKE_PROFIT_PERCENT*100:.1f}%`\n"
-            f"🛑 Stop Loss: `{STOP_LOSS_PERCENT*100:.1f}%`\n\n"
-            f"📺 **Monitoring {len(sources_info)} Sources:**\n"
-        )
-        
-        for source_info in sources_info:
-            source_emoji = {
-                'Channel': '📢',
-                'Supergroup': '👥',
-                'Group': '👥'
-            }.get(source_info['type'], '📺')
-            
-            startup_message += f"{source_emoji} `{source_info['title']}`"
-            if source_info.get('username'):
-                startup_message += f" (@{source_info['username']})"
-            startup_message += "\n"
-        
-        startup_message += f"\n🚀 **System Ready!**"
-            
-        await send_dm_to_owner(startup_message)
-        
-        # Start background tasks
-        logger.info("🔄 Starting background monitoring tasks...")
-        background_task = asyncio.create_task(background_tasks())
-        
-        logger.info("🎯 Bot is now actively monitoring for messages and managing trades!")
-        
-        # Keep the client running
-        try:
-            await client.run_until_disconnected()
-        finally:
-            logger.info("🛑 Shutting down background tasks...")
-            background_task.cancel()
+        @client.on(events.NewMessage(chats=MONITOR_GROUPS + MONITOR_CHANNELS))
+        async def handle_message(event):
             try:
-                await background_task
-            except asyncio.CancelledError:
-                logger.info("✅ Background tasks stopped")
+                message_text = event.raw_text
+                if not message_text:
+                    return
+                
+                logger.debug(f"📨 New message: {message_text[:100]}...")
+                
+                # Detect token addresses
+                tokens = self.extract_token_addresses(message_text)
+                if not tokens:
+                    return
+                
+                # Detect platform
+                platform = self.detect_platform(message_text)
+                
+                # Process each token
+                for token in tokens:
+                    if is_valid_solana_address(token):
+                        logger.info(f"🎯 Token detected: {token} on {platform}")
+                        await self.process_buy_signal(token, platform, message_text)
+                
+            except Exception as e:
+                logger.error(f"❌ Message handler error: {e}")
         
-    except KeyboardInterrupt:
-        logger.info("👋 Bot stopped by user (Ctrl+C)")
-    except Exception as e:
-        logger.error(f"❌ Fatal error: {e}")
-        import traceback
-        logger.error(f"Traceback: {traceback.format_exc()}")
-        raise
+        @client.on(events.NewMessage(pattern='/status', chats=[OWNER_ID]))
+        async def handle_status(event):
+            await self.send_status_report(event)
+        
+        @client.on(events.NewMessage(pattern='/balance', chats=[OWNER_ID]))
+        async def handle_balance(event):
+            balance = await real_trader.get_wallet_balance()
+            await event.reply(f"💰 Wallet Balance: {balance:.6f} SOL")
+        
+        @client.on(events.NewMessage(pattern='/trades', chats=[OWNER_ID]))
+        async def handle_trades(event):
+            await self.send_active_trades(event)
+    
+    def extract_token_addresses(self, text: str) -> List[str]:
+        """Extract Solana token addresses from text"""
+        # Multiple patterns for token detection
+        patterns = [
+            r'[A-Za-z0-9]{40,50}',  # General base58 pattern
+            r'[123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz]{44}',  # Specific base58
+            r'Address:\s*([A-Za-z0-9]{40,50})',  # Address: format
+            r'CA:\s*([A-Za-z0-9]{40,50})',  # CA: format
+            r'Token:\s*([A-Za-z0-9]{40,50})',  # Token: format
+        ]
+        
+        tokens = set()
+        for pattern in patterns:
+            matches = re.findall(pattern, text)
+            for match in matches:
+                if isinstance(match, tuple):
+                    match = match[0]
+                if len(match) >= 40 and is_valid_solana_address(match):
+                    tokens.add(match)
+        
+        return list(tokens)
+    
+    def detect_platform(self, text: str) -> str:
+        """Detect trading platform from message"""
+        text_lower = text.lower()
+        
+        if any(keyword in text_lower for keyword in ['pump.fun', 'pumpfun', 'pump fun']):
+            return 'pumpfun'
+        elif any(keyword in text_lower for keyword in ['moonshot', 'moon shot']):
+            return 'moonshot'
+        elif any(keyword in text_lower for keyword in ['raydium', 'ray']):
+            return 'raydium'
+        elif any(keyword in text_lower for keyword in ['jupiter', 'jup']):
+            return 'jupiter'
+        else:
+            return 'unknown'
+    
+    async def process_buy_signal(self, token_mint: str, platform: str, message: str):
+        """Process buy signal for token"""
+        try:
+            logger.info(f"🔄 Processing buy signal: {token_mint}")
+            
+            # Check if we already have this token
+            db = next(get_db())
+            existing_trades = get_active_trades(db)
+            
+            for trade in existing_trades:
+                if trade.token_mint_address == token_mint:
+                    logger.info(f"⚠️ Already have active trade for {token_mint}")
+                    return
+            
+            # Check max purchases limit
+            if len(existing_trades) >= MAX_PURCHASES:
+                logger.warning(f"⚠️ Max purchases limit reached ({MAX_PURCHASES})")
+                await self.send_dm_to_owner(
+                    f"⚠️ **Max Purchases Limit Reached**\n"
+                    f"🔢 Current: {len(existing_trades)}/{MAX_PURCHASES}\n"
+                    f"🪙 Skipped token: `{token_mint}`"
+                )
+                return
+            
+            # Get token price
+            current_price = await get_token_price_sol(token_mint)
+            if not current_price:
+                logger.error(f"❌ Could not get price for {token_mint}")
+                return
+            
+            logger.info(f"💰 Token price: {current_price:.12f} SOL")
+            
+            # Execute buy
+            logger.warning(f"🔴 EXECUTING BUY FOR: {token_mint}")
+            buy_result = await buy_token_solana(token_mint)
+            
+            if not buy_result:
+                logger.error(f"❌ Buy failed for {token_mint}")
+                await self.send_dm_to_owner(
+                    f"❌ **Buy Failed**\n"
+                    f"🪙 Token: `{token_mint}`\n"
+                    f"🏷️ Platform: {platform}"
+                )
+                return
+            
+            # Check if real or mock
+            is_real = not buy_result['buy_tx_signature'].startswith('mock_')
+            
+            # Save to database
+            trade_id = save_trade(
+                db=db,
+                token_mint_address=token_mint,
+                buy_price_sol=buy_result['buy_price_sol'],
+                amount_bought_token=buy_result['amount_bought_token'],
+                wallet_token_account=buy_result['wallet_token_account'],
+                buy_tx_signature=buy_result['buy_tx_signature'],
+                platform=platform
+            )
+            
+            logger.info(f"✅ Trade saved with ID: {trade_id}")
+            
+            # Send notification
+            await self.send_buy_notification(buy_result, platform, is_real, message)
+            
+        except Exception as e:
+            logger.error(f"❌ Buy signal processing error: {e}")
+            import traceback
+            logger.error(f"📋 Traceback: {traceback.format_exc()}")
+    
+    async def send_buy_notification(self, buy_result: dict, platform: str, is_real: bool, original_message: str):
+        """Send buy notification to owner"""
+        try:
+            status_emoji = "🔴" if is_real else "🟡"
+            status_text = "REAL TRADE" if is_real else "MOCK TRADE"
+            
+            # Build explorer URL
+            tx_signature = buy_result['buy_tx_signature']
+            explorer_url = f"https://solscan.io/tx/{tx_signature}" if is_real else "N/A (Mock)"
+            
+            notification = f"""
+{status_emoji} **{status_text} - BUY EXECUTED**
+
+🪙 **Token**: `{buy_result['token_mint_address']}`
+🏷️ **Platform**: {platform.upper()}
+💰 **Buy Price**: {buy_result['buy_price_sol']:.12f} SOL
+📊 **Amount**: {buy_result['amount_bought_token']:,.0f} tokens
+💵 **Total Cost**: {buy_result['buy_price_sol'] * buy_result['amount_bought_token']:.6f} SOL
+🔗 **Transaction**: [View on Solscan]({explorer_url})
+
+📝 **Original Signal**:
+{original_message[:200]}...
+"""
+            
+            await self.send_dm_to_owner(notification)
+            
+        except Exception as e:
+            logger.error(f"❌ Notification error: {e}")
+    
+    async def monitor_trades(self):
+        """Monitor active trades for sell conditions"""
+        logger.info("👁️ Starting trade monitoring...")
+        
+        while True:
+            try:
+                db = next(get_db())
+                active_trades = get_active_trades(db)
+                
+                if not active_trades:
+                    await asyncio.sleep(30)
+                    continue
+                
+                logger.debug(f"📊 Monitoring {len(active_trades)} active trades")
+                
+                for trade in active_trades:
+                    await self.check_sell_conditions(trade, db)
+                
+                await asyncio.sleep(5)  # Check every 5 seconds for responsiveness
+                
+            except Exception as e:
+                logger.error(f"❌ Monitor error: {e}")
+                await asyncio.sleep(30)
+    
+    async def check_sell_conditions(self, trade, db):
+        """Check if trade should be sold"""
+        try:
+            token_mint = trade.token_mint_address
+            
+            # Get current price
+            current_price = await get_token_price_sol(token_mint)
+            if not current_price:
+                return
+            
+            # Calculate profit/loss
+            profit_loss_percent = (current_price - trade.buy_price_sol) / trade.buy_price_sol
+            
+            # Get settings
+            take_profit = float(os.getenv('TAKE_PROFIT_PERCENT', '3.0'))  # 300%
+            stop_loss = float(os.getenv('STOP_LOSS_PERCENT', '0.4'))     # 40%
+            
+            should_sell = False
+            sell_reason = ""
+            
+            # Take profit check
+            if profit_loss_percent >= take_profit:
+                should_sell = True
+                sell_reason = f"Take Profit ({take_profit*100:.0f}%)"
+            
+            # Stop loss check
+            elif profit_loss_percent <= -stop_loss:
+                should_sell = True
+                sell_reason = f"Stop Loss ({stop_loss*100:.0f}%)"
+            
+            # Time-based sell (24 hours with <5% movement)
+            elif (datetime.utcnow() - trade.created_at) > timedelta(hours=24):
+                if abs(profit_loss_percent) < 0.05:
+                    should_sell = True
+                    sell_reason = "Time-based (24h, <5% movement)"
+            
+            if should_sell:
+                await self.execute_sell(trade, sell_reason, current_price, db)
+            
+        except Exception as e:
+            logger.error(f"❌ Sell condition check error: {e}")
+    
+    async def execute_sell(self, trade, reason: str, current_price: float, db):
+        """Execute sell order"""
+        try:
+            logger.warning(f"🔴 EXECUTING SELL: {trade.token_mint_address} - {reason}")
+            
+            # Execute sell
+            sell_result = await sell_token_solana(
+                trade.token_mint_address,
+                trade.amount_bought_token,
+                trade.wallet_token_account
+            )
+            
+            if not sell_result:
+                logger.error(f"❌ Sell failed for {trade.token_mint_address}")
+                return
+            
+            # Calculate final P&L
+            profit_loss_percent = (current_price - trade.buy_price_sol) / trade.buy_price_sol
+            is_real = not sell_result['sell_tx_signature'].startswith('mock_')
+            
+            # Update database
+            status = "sold_profit" if profit_loss_percent > 0 else "sold_loss"
+            update_trade_status(
+                db, trade.id,
+                status=status,
+                sell_price_sol=sell_result['sell_price_sol'],
+                sell_tx_signature=sell_result['sell_tx_signature']
+            )
+            
+            # Send notification
+            await self.send_sell_notification(trade, sell_result, reason, profit_loss_percent, is_real)
+            
+            logger.info(f"✅ Sell completed: {reason} - P&L: {profit_loss_percent*100:.2f}%")
+            
+        except Exception as e:
+            logger.error(f"❌ Sell execution error: {e}")
+    
+    async def send_sell_notification(self, trade, sell_result: dict, reason: str, profit_percent: float, is_real: bool):
+        """Send sell notification"""
+        try:
+            status_emoji = "🔴" if is_real else "🟡"
+            profit_emoji = "📈" if profit_percent > 0 else "📉"
+            
+            tx_signature = sell_result['sell_tx_signature']
+            explorer_url = f"https://solscan.io/tx/{tx_signature}" if is_real else "N/A (Mock)"
+            
+            notification = f"""
+{status_emoji} **SELL EXECUTED** {profit_emoji}
+
+🪙 **Token**: `{trade.token_mint_address}`
+🏷️ **Platform**: {trade.platform.upper()}
+🎯 **Reason**: {reason}
+
+💰 **Buy Price**: {trade.buy_price_sol:.12f} SOL
+💰 **Sell Price**: {sell_result['sell_price_sol']:.12f} SOL
+📊 **P&L**: {profit_percent*100:.2f}%
+
+🔗 **Transaction**: [View on Solscan]({explorer_url})
+"""
+            
+            await self.send_dm_to_owner(notification)
+            
+        except Exception as e:
+            logger.error(f"❌ Sell notification error: {e}")
+    
+    async def send_dm_to_owner(self, message: str):
+        """Send DM to bot owner"""
+        try:
+            await client.send_message(OWNER_ID, message)
+        except Exception as e:
+            logger.error(f"❌ DM send error: {e}")
+    
+    async def send_status_report(self, event):
+        """Send status report"""
+        try:
+            db = next(get_db())
+            active_trades = get_active_trades(db)
+            
+            balance = await real_trader.get_wallet_balance()
+            
+            status = f"""
+📊 **Bot Status Report**
+
+💎 **Wallet**: {real_trader.keypair.pubkey() if real_trader.keypair else 'Not loaded'}
+💰 **Balance**: {balance:.6f} SOL
+🔴 **Real Trading**: {real_trader.enable_real_trading}
+📈 **Active Trades**: {len(active_trades)}/{MAX_PURCHASES}
+
+🎯 **Settings**:
+• Buy Amount: {os.getenv('AMOUNT_TO_BUY_SOL')} SOL
+• Take Profit: {float(os.getenv('TAKE_PROFIT_PERCENT', '3.0'))*100:.0f}%
+• Stop Loss: {float(os.getenv('STOP_LOSS_PERCENT', '0.4'))*100:.0f}%
+• Slippage: {int(os.getenv('SLIPPAGE_BPS', '1500'))/100:.1f}%
+"""
+            
+            await event.reply(status)
+            
+        except Exception as e:
+            logger.error(f"❌ Status report error: {e}")
+    
+    async def send_active_trades(self, event):
+        """Send active trades list"""
+        try:
+            db = next(get_db())
+            active_trades = get_active_trades(db)
+            
+            if not active_trades:
+                await event.reply("📊 No active trades")
+                return
+            
+            trades_text = "📊 **Active Trades**:\n\n"
+            
+            for i, trade in enumerate(active_trades[:5], 1):  # Show max 5
+                current_price = await get_token_price_sol(trade.token_mint_address)
+                if current_price:
+                    pnl = (current_price - trade.buy_price_sol) / trade.buy_price_sol * 100
+                    pnl_emoji = "📈" if pnl > 0 else "📉"
+                else:
+                    pnl = 0
+                    pnl_emoji = "❓"
+                
+                trades_text += f"""
+{i}. **{trade.platform.upper()}**
+🪙 `{trade.token_mint_address[:16]}...`
+💰 Buy: {trade.buy_price_sol:.8f} SOL
+{pnl_emoji} P&L: {pnl:.1f}%
+"""
+            
+            await event.reply(trades_text)
+            
+        except Exception as e:
+            logger.error(f"❌ Active trades error: {e}")
+
+# Run the bot
+async def main():
+    bot = RealTradingBot()
+    await bot.start()
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        print("\n👋 Bot stopped by user")
-    except Exception as e:
-        print(f"❌ Fatal error: {e}")
+    asyncio.run(main())
