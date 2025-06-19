@@ -1,4 +1,5 @@
 import os
+import json
 from dotenv import load_dotenv
 from loguru import logger
 
@@ -16,7 +17,7 @@ class Config:
     MONITOR_CHANNELS = [int(x.strip()) for x in os.getenv('MONITOR_CHANNELS', '').split(',') if x.strip()]
     
     # Bot Configuration
-    BOT_ENABLED = os.getenv('BOT_ENABLED', 'true').lower() == 'true'  # Tambahkan ini
+    BOT_ENABLED = os.getenv('BOT_ENABLED', 'true').lower() == 'true'
     
     # Solana Configuration
     RPC_URL = os.getenv('RPC_URL', 'https://api.mainnet-beta.solana.com')
@@ -39,7 +40,8 @@ class Config:
     ENABLE_MOONSHOT = os.getenv('ENABLE_MOONSHOT', 'true').lower() == 'true'
     ENABLE_RAYDIUM = os.getenv('ENABLE_RAYDIUM', 'true').lower() == 'true'
     ENABLE_BIRDEYE = os.getenv('ENABLE_BIRDEYE', 'true').lower() == 'true'
-
+    
+    # Entity details cache
     _entity_details = None
     
     def get_entity_details(self):
@@ -72,3 +74,5 @@ class Config:
             except Exception as e:
                 logger.error(f"❌ Error saving entity details: {e}")
 
+# Initialize config instance
+config = Config()
