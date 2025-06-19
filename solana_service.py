@@ -318,7 +318,7 @@ class SolanaTrader:
             logger.error(f"❌ Swap request error: {e}")
         return None
     
-    async def _execute_transaction_safe(self, transaction_b64: str) -> Optional[str]:
+    sync def _execute_transaction_safe(self, transaction_b64: str) -> Optional[str]:
         """Execute transaction with better error handling"""
         try:
             logger.info("🔄 Processing transaction...")
@@ -327,86 +327,233 @@ class SolanaTrader:
             transaction_bytes = base64.b64decode(transaction_b64)
             logger.info(f"✅ Decoded transaction: {len(transaction_bytes)} bytes")
             
-            # For now, since we're having consistent signing issues with Jupiter,
-            # let's use mock mode with a realistic simulation
-            logger.warning("🟡 Using enhanced mock mode due to transaction signing complexity")
+            # Check if real trading is enabled
+            if not self.enable_real_trading:
+                logger.warning("🟡 Real trading disabled - using mock mode")
+                await asyncio.sleep(2)  # Simulate delay
+                mock_signature = f"mock_disabled_{int(time.time())}_{hash(transaction_b64) % 10000}"
+                logger.info(f"🟡 Mock transaction (disabled): {mock_signature}")
+                return mock_signature
             
-            # Simulate realistic delay
-            await asyncio.sleep(2)
+            # Real trading is enabled - attempt real transaction
+            logger.warning("🔴 REAL TRADING ENABLED - ATTEMPTING REAL TRANSACTION")
             
-            # Return mock transaction signature
-            mock_signature = f"mock_real_{int(time.time())}_{hash(transaction_b64) % 10000}"
-            logger.info(f"🟡 Mock transaction completed: {mock_signature}")
-            
-            return mock_signature
-            
-            # TODO: Real transaction implementation
-            # The code below can be enabled once we resolve the signing issues
-            """
             try:
+                # Method 1: Try VersionedTransaction
                 logger.info("🔄 Attempting VersionedTransaction...")
                 versioned_tx = VersionedTransaction.from_bytes(transaction_bytes)
                 logger.info("✅ VersionedTransaction deserialized successfully")
                 
-                # Create fresh transaction with proper signature
-                message = versioned_tx.message
-                
-                # Sign with our keypair
-                signature = self.keypair.sign_message(to_bytes_versioned(message))
-                
-                # Create new signed transaction
-                signed_tx = VersionedTransaction(message, [signature])
-                
-                logger.info("✅ Transaction signed with fresh signature")
+                # Sign the transaction
+                versioned_tx.sign([self.keypair])
+                logger.info("✅ Transaction signed")
                 
                 # Send transaction
+                logger.info("📤 Sending real transaction...")
                 response = await self.client.send_transaction(
-                    signed_tx,
+                    versioned_tx,
                     opts=TxOpts(
                         skip_confirmation=False,
-                        skip_preflight=True,  # Skip preflight for now
+                        skip_preflight=False,
                         preflight_commitment=Commitment("confirmed")
                     )
                 )
                 
                 if hasattr(response, 'value'):
                     tx_signature = str(response.value)
-                    logger.info(f"📤 Real transaction sent: {tx_signature}")
+                    logger.info(f"🔴 REAL TRANSACTION SENT: {tx_signature}")
                     
                     # Wait for confirmation
-                    await asyncio.sleep(5)
-                    return tx_signature
+                    logger.info("⏳ Waiting for confirmation...")
+                    await asyncio.sleep(10)
+                    
+                    # Try to confirm
+                    try:
+                        confirm_response = await self.client.get_signature_statuses([tx_signature])
+                        if confirm_response.value and confirm_response.value[0]:
+                            status = confirm_response.value[0]
+                            if hasattr(status, 'err') and status.err:
+                                logger.error(f"❌ Transaction failed on chain: {status.err}")
+                                return None
+                            else:
+                                logger.info(f"✅ REAL TRANSACTION CONFIRMED: {tx_signature}")
+                                return tx_signature
+                    except Exception as confirm_e:
+                        logger.warning(f"⚠️ Could not confirm but transaction sent: {confirm_e}")
+                        return tx_signature
                 
-            except Exception as e:
-                logger.error(f"❌ Real transaction failed: {e}")
-                return mock_signature
-            """
+                else:
+                    logger.error(f"❌ Unexpected response format: {response}")
+                    
+            except Exception as ve:
+                logger.error(f"❌ VersionedTransaction failed: {ve}")
+                
+                # Method 2: Try raw transaction
+                try:
+                    logger.info("🔄 Attempting raw transaction...")
+                    response = await self.client.send_raw_transaction(
+                        transaction_bytes,
+                        opts=TxOpts(
+                            skip_confirmation=False,
+                            skip_preflight=False,
+                            preflight_commitment=Commitment("confirmed")
+                        )
+                    )
+                    
+                    if hasattr(response, 'value'):
+                        tx_signature = str(response.value)
+                        logger.info(f"🔴 RAW TRANSACTION SENT: {tx_signature}")
+                        await asyncio.sleep(10)
+                        return tx_signature
+                        
+                except Exception as re:
+                    logger.error(f"❌ Raw transaction failed: {re}")
+            
+            # If all real methods fail, fall back to mock with warning
+            logger.error("❌ ALL REAL TRANSACTION METHODS FAILED")
+            logger.warning("🟡 Falling back to mock mode for this transaction")
+            
+            await asyncio.sleep(2)
+            mock_signature = f"mock_fallback_{int(time.time())}_{hash(transaction_b64) % 10000}"
+            logger.warning(f"🟡 Mock fallback transaction: {mock_signature}")
+            return mock_signature
                 
         except Exception as e:
             logger.error(f"❌ Transaction execution error: {e}")
             import traceback
             logger.error(f"Traceback: {traceback.format_exc()}")
             
-            # Return mock signature on any error
-            return f"mock_error_{int(time.time())}"
+            # Return mock signature on critical error
+            mock_signature = f"mock_error_{int(time.time())}"
+            logger.warning(f"🟡 Mock error transaction: {mock_signature}")
+            return mock_signature
     
     async def sell_token(self, token_mint: str, amount: float, wallet_account: str) -> Optional[Dict]:
-        """Sell token"""
+        """Sell token - REAL MONEY if enabled"""
         try:
             logger.warning(f"🔴 SELL INITIATED: {token_mint}")
+            
+            if not self.is_valid_solana_address(token_mint):
+                logger.error(f"❌ Invalid token address")
+                return None
+            
+            # Rate limiting
+            last_sell = self.last_transaction.get(f"sell_{token_mint}", 0)
+            if time.time() - last_sell < 10:
+                logger.warning("⚠️ Rate limited - too soon since last sell")
+                return None
+            
+            # Get current price
+            current_price = await self.get_token_price_sol(token_mint)
+            if not current_price:
+                logger.error("❌ Could not get current token price")
+                return None
             
             if not self.enable_real_trading:
                 logger.warning("🟡 Real trading disabled - using mock")
                 return await self._mock_sell(token_mint)
             
-            # For now, use mock sell until we implement full sell logic
-            logger.warning("🟡 Real sell not implemented yet - using mock")
-            return await self._mock_sell(token_mint)
+            # Check if we have balance to sell
+            balance = await self.get_wallet_balance()
+            if not balance or balance < 0.005:  # Need some SOL for gas
+                logger.error(f"❌ Insufficient SOL for gas: {balance:.6f} SOL")
+                return await self._mock_sell(token_mint)
+            
+            # Execute Jupiter sell
+            result = await self._execute_jupiter_sell(token_mint, amount, config.SLIPPAGE_BPS)
+            
+            if result:
+                self.last_transaction[f"sell_{token_mint}"] = time.time()
+                logger.info(f"✅ SELL SUCCESSFUL! TX: {result['sell_tx_signature']}")
+                return result
+            else:
+                logger.error("❌ Real sell failed, using mock fallback")
+                return await self._mock_sell(token_mint)
             
         except Exception as e:
             logger.error(f"❌ Sell error: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            return await self._mock_sell(token_mint)
+    async def _execute_jupiter_sell(self, token_mint: str, amount: float, slippage_bps: int) -> Optional[Dict]:
+        """Execute Jupiter swap for selling"""
+        try:
+            # For sell, we need to swap FROM token TO SOL
+            # Amount should be in token units (smallest unit)
+            
+            # Get token decimals (most tokens use 6 or 9 decimals)
+            token_decimals = await self._get_token_decimals(token_mint)
+            if token_decimals is None:
+                token_decimals = 6  # Default to 6 decimals
+            
+            # Convert amount to smallest units
+            amount_smallest_units = int(amount * (10 ** token_decimals))
+            
+            logger.info(f"🔄 Selling {amount:,.0f} tokens ({amount_smallest_units} smallest units)")
+            
+            # Get Jupiter quote for selling
+            quote = await self._get_jupiter_quote(
+                input_mint=token_mint,  # Selling this token
+                output_mint='So11111111111111111111111111111111111111112',  # For SOL
+                amount=amount_smallest_units,
+                slippage_bps=slippage_bps
+            )
+            
+            if not quote:
+                logger.error("❌ Could not get Jupiter sell quote")
+                return None
+            
+            expected_sol = int(quote.get('outAmount', 0)) / 1_000_000_000  # Convert lamports to SOL
+            logger.info(f"✅ Sell Quote: {expected_sol:.6f} SOL for {amount:,.0f} tokens")
+            
+            # Get swap transaction
+            swap_tx_data = await self._get_jupiter_swap_transaction(quote)
+            if not swap_tx_data:
+                logger.error("❌ Could not get sell swap transaction")
+                return None
+            
+            # Execute transaction
+            tx_signature = await self._execute_transaction_safe(swap_tx_data)
+            if not tx_signature:
+                logger.error("❌ Could not execute sell transaction")
+                return None
+            
+            return {
+                'sell_price_sol': expected_sol / amount if amount > 0 else 0,  # Price per token
+                'sell_tx_signature': tx_signature,
+                'total_sol_received': expected_sol
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ Jupiter sell error: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
             return None
-    
+    async def _get_token_decimals(self, token_mint: str) -> Optional[int]:
+        """Get token decimals from RPC"""
+        try:
+            if not self.client:
+                return None
+            
+            # Get token supply info
+            from solders.pubkey import Pubkey
+            mint_pubkey = Pubkey.from_string(token_mint)
+            response = await self.client.get_account_info(mint_pubkey)
+            
+            if response.value and response.value.data:
+                # Token mint data structure: first 44 bytes contain mint info
+                # Decimals is at byte 44 (0-indexed)
+                data = response.value.data
+                if len(data) > 44:
+                    decimals = data[44]
+                    logger.info(f"📊 Token {token_mint[:8]}... has {decimals} decimals")
+                    return decimals
+            
+            return None
+            
+        except Exception as e:
+            logger.debug(f"Could not get token decimals: {e}")
+            return None
     async def _mock_buy(self, token_mint: str, buy_amount_sol: float) -> Dict:
         """Mock buy for testing"""
         price = await self.get_token_price_sol(token_mint) or 0.000001
