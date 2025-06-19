@@ -3,6 +3,7 @@ import asyncio
 import os
 from datetime import datetime
 from telethon import TelegramClient, events
+from telethon.tl.types import MessageService, MessageActionPinMessage
 import logging
 from dotenv import load_dotenv
 
@@ -73,16 +74,38 @@ async def handler_new_channel_message(event):
 # Handler untuk pinned message di grup
 @client.on(events.MessageEdited(chats=MONITOR_GROUPS))
 async def handler_pinned_message(event):
-    if event.message.pinned:
+    message = event.message
+
+    # Cek apakah ini service message dan isinya adalah pin
+    if isinstance(message, MessageService) and isinstance(message.action, MessageActionPinMessage):
         try:
             chat = await event.get_chat()
             chat_title = getattr(chat, 'title', 'Unknown Group')
-            logging.info(f"📌 Pinned message detected in {chat_title} ({event.chat_id})")
-            print(f"📌 Pinned message in {chat_title}")
-            await detect_and_forward_ca(event)
+
+            # Ambil pesan yang di-pin
+            pinned_msg_id = message.action.message_id
+            pinned_msg = await client.get_messages(chat.id, ids=pinned_msg_id)
+
+            if pinned_msg:
+                sender = await pinned_msg.get_sender()
+                sender_name = sender.username or sender.first_name or "Unknown"
+                text = pinned_msg.message or "(no text)"
+
+                print("===================================")
+                print(f"📌 Pinned message in: {chat_title}")
+                print(f"👤 Sender           : {sender_name}")
+                print(f"📝 Message          : {text}")
+                print("===================================")
+
+                # Cek apakah mengandung CA
+                await detect_and_forward_ca(pinned_msg)
+
+            else:
+                print(f"❌ Pinned message not found in {chat_title}")
+
         except Exception as e:
-            logging.error(f"❌ Error processing pinned message: {e}")
-            print(f"❌ Error processing pinned message: {e}")
+            logging.error(f"❌ Error handling pinned message: {e}")
+            print(f"❌ Error handling pinned message: {e}")
 
 # Fungsi heartbeat (jalan tiap 2 detik)
 async def heartbeat():
