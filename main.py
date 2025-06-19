@@ -53,30 +53,16 @@ async def handler_new_channel_message(event):
     await detect_and_forward_ca(event)
 
 # --- Event Handler untuk pin message di GROUP ---
-@client.on(events.NewMessage(chats=MONITOR_GROUPS))
-async def handler_service_message(event):
-    """Handle service messages in monitored groups"""
+@client.on(events.MessagePinned(chats=MONITOR_GROUPS))
+async def handler_pinned_message(event):
     try:
         group_id = event.chat_id
-        group_name = f"Group {group_id}"
-
-        # Periksa apakah pesan adalah service message
-        if isinstance(event.message, events.MessageService):
-            logging.info(f"🔧 Service message detected in {group_name} ({group_id})")
-
-            # Periksa apakah service message terkait dengan pinned message
-            if hasattr(event.message.action, "message"):
-                pinned_msg_id = event.message.action.message.id
-                logging.info(f"📌 Pinned message ID: {pinned_msg_id}")
-
-                # Ambil pesan yang di-pin
-                pinned_msg = await client.get_messages(group_id, ids=pinned_msg_id)
-                if pinned_msg:
-                    await detect_and_forward_ca(pinned_msg)
-        else:
-            logging.info(f"📝 Regular message in {group_name} ({group_id})")
+        pinned_msg = event.message  # Ini adalah message yang dipin
+        logging.info(f"📌 New pinned message in group {group_id}: {pinned_msg.id}")
+        
+        await detect_and_forward_ca(event)  # event.message sudah isi pinned msg
     except Exception as e:
-        logging.error(f"❌ Error in handler_service_message: {e}")
+        logging.error(f"❌ Error handling pinned message: {e}")
 
 # --- Heartbeat setiap 2 detik ---
 async def heartbeat():
@@ -86,12 +72,38 @@ async def heartbeat():
         logging.info("[HEARTBEAT]")
         await asyncio.sleep(2)
 
+async def log_monitor_info():
+    print("===================================")
+    print(f"📅 Start Time    : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print("📡 Monitoring:")
+    
+    for group_id in MONITOR_GROUPS:
+        try:
+            entity = await client.get_entity(group_id)
+            name = entity.title if hasattr(entity, "title") else "Private Group"
+            print(f"🔸 Group         : {name} ({group_id})")
+        except Exception as e:
+            print(f"⚠️  Failed to get group {group_id}: {e}")
+    
+    for channel_id in MONITOR_CHANNELS:
+        try:
+            entity = await client.get_entity(channel_id)
+            name = entity.title if hasattr(entity, "title") else "Private Channel"
+            print(f"🔹 Channel       : {name} ({channel_id})")
+        except Exception as e:
+            print(f"⚠️  Failed to get channel {channel_id}: {e}")
+    
+    print("❤️ Heartbeat     : Running every 2s")
+    print("===================================")
 # --- Main ---
 async def main():
     await client.start()
-    print("Bot is running...")
+    print("🔌 Bot is starting...")
     logging.info("Bot started.")
-    await asyncio.gather(client.run_until_disconnected(), heartbeat())
 
-if __name__ == '__main__':
-    asyncio.run(main())
+    await log_monitor_info()
+
+    await asyncio.gather(
+        client.run_until_disconnected(),
+        heartbeat()
+    )
