@@ -79,7 +79,18 @@ async def handle_channel_message(event):
 
             # 3b. Kirim hanya CA ke TO_USER
             only_ca = "\n".join([c['address'] for c in ca_results])
-            await client.send_message(TO_USER_ID, only_ca)
+            try:
+                print(f"[DEBUG] Sending CA to TO_USER_ID {TO_USER_ID}: {only_ca}")
+                await client.send_message(TO_USER_ID, only_ca)
+                print(f"[DEBUG] CA sent successfully to TO_USER_ID {TO_USER_ID}")
+            except Exception as send_err:
+                warn = f"⚠️ Gagal kirim CA ke TO_USER_ID {TO_USER_ID}: {send_err}"
+                print(warn)
+                logging.error(warn)
+                try:
+                    await client.send_message(OWNER_ID, warn)
+                except Exception:
+                    pass
 
             # 3c. Log terminal
             print("===================================")
@@ -138,7 +149,18 @@ if MONITOR_USERS:
 
                 # Kirim hanya CA ke TO_USER
                 only_ca = "\n".join([c['address'] for c in ca_results])
-                await client.send_message(TO_USER_ID, only_ca)
+                try:
+                    print(f"[DEBUG] Sending CA to TO_USER_ID {TO_USER_ID}: {only_ca}")
+                    await client.send_message(TO_USER_ID, only_ca)
+                    print(f"[DEBUG] CA sent successfully to TO_USER_ID {TO_USER_ID}")
+                except Exception as send_err:
+                    warn = f"⚠️ Gagal kirim CA ke TO_USER_ID {TO_USER_ID}: {send_err}"
+                    print(warn)
+                    logging.error(warn)
+                    try:
+                        await client.send_message(OWNER_ID, warn)
+                    except Exception:
+                        pass
 
                 logging.info(f"✅ CA from monitored user {sender_name} in {chat_title}: {only_ca}")
             else:
@@ -175,6 +197,20 @@ async def main():
             except Exception:
                 print(f"🔹 (Unknown user {u}) ({u})")
     logging.info("Bot started")
+    # --- Test kirim pesan ke TO_USER_ID di startup ---
+    try:
+        test_msg = "[TEST] Bot started. Jika kamu menerima pesan ini, pengiriman ke TO_USER_ID OK."
+        print(f"[DEBUG] Sending startup test to TO_USER_ID {TO_USER_ID}")
+        await client.send_message(TO_USER_ID, test_msg)
+        print(f"[DEBUG] Startup test sent to TO_USER_ID {TO_USER_ID}")
+    except Exception as e:
+        warn = f"⚠️ Gagal kirim pesan startup ke TO_USER_ID {TO_USER_ID}: {e}"
+        print(warn)
+        logging.error(warn)
+        try:
+            await client.send_message(OWNER_ID, warn)
+        except Exception:
+            pass
     await asyncio.gather(client.run_until_disconnected(), heartbeat())
 
 if __name__ == "__main__":
