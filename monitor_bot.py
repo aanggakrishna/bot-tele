@@ -338,74 +338,72 @@ class TelegramMonitorBot:
         except Exception as e:
             logger.error(f"❌ Failed to setup handlers: {e}")
 
-# Add new method for periodic pin checking
-async def periodic_pin_check(self):
-    """Periodically check pinned messages in all monitored groups"""
-    while self.running:
-        try:
-            for group_id in config.MONITOR_GROUPS:
-                try:
-                    # Get the chat
-                    chat = await self.client.get_entity(group_id)
-                    
-                    # Get full chat to access pinned message
-                    full_chat = await self.client(GetFullChannelRequest(channel=chat))
-                    
-                    # Check if there is a pinned message
-                    if hasattr(full_chat, 'full_chat') and full_chat.full_chat.pinned_msg_id:
-                        pinned_id = full_chat.full_chat.pinned_msg_id
-                        pinned_msg = await self.client.get_messages(group_id, ids=pinned_id)
-                        if pinned_msg:
-                            await self.handle_pinned_message_by_id(group_id, pinned_msg)
-                except Exception as e:
-                    logger.debug(f"⚠️ Error checking pins in {group_id}: {e}")
-            
-            # Wait before next check
-            await asyncio.sleep(300)  # Check every 5 minutes
-            
-        except asyncio.CancelledError:
-            break
-        except Exception as e:
-            logger.error(f"❌ Error in periodic pin check: {e}")
-            await asyncio.sleep(60)
+    async def periodic_pin_check(self):
+        """Periodically check pinned messages in all monitored groups"""
+        while self.running:
+            try:
+                for group_id in config.MONITOR_GROUPS:
+                    try:
+                        # Get the chat
+                        chat = await self.client.get_entity(group_id)
+                        
+                        # Get full chat to access pinned message
+                        full_chat = await self.client(GetFullChannelRequest(channel=chat))
+                        
+                        # Check if there is a pinned message
+                        if hasattr(full_chat, 'full_chat') and full_chat.full_chat.pinned_msg_id:
+                            pinned_id = full_chat.full_chat.pinned_msg_id
+                            pinned_msg = await self.client.get_messages(group_id, ids=pinned_id)
+                            if pinned_msg:
+                                await self.handle_pinned_message_by_id(group_id, pinned_msg)
+                    except Exception as e:
+                        logger.debug(f"⚠️ Error checking pins in {group_id}: {e}")
+                
+                # Wait before next check
+                await asyncio.sleep(300)  # Check every 5 minutes
+                
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"❌ Error in periodic pin check: {e}")
+                await asyncio.sleep(60)
 
-# Add helper method to handle pinned messages by ID
-async def handle_pinned_message_by_id(self, chat_id, message):
-    """Handle pinned message using direct message object"""
-    try:
-        # Skip if already processed (add message ID tracking)
-        message_id = message.id
-        if message_id in self.processed_pins:
-            return
+    async def handle_pinned_message_by_id(self, chat_id, message):
+        """Handle pinned message using direct message object"""
+        try:
+            # Skip if already processed (add message ID tracking)
+            message_id = message.id
+            if message_id in self.processed_pins:
+                return
+                
+            # Mark as processed
+            self.processed_pins.add(message_id)
             
-        # Mark as processed
-        self.processed_pins.add(message_id)
-        
-        # Get group details
-        group_id = str(chat_id)
-        group_name = self.entity_details['groups'].get(group_id, f"Group {group_id}")
-        
-        # Extract message text
-        message_text = message.text or message.message or ""
-        if not message_text and message.caption:
-            message_text = message.caption
+            # Get group details
+            group_id = str(chat_id)
+            group_name = self.entity_details['groups'].get(group_id, f"Group {group_id}")
             
-        # Skip empty messages
-        if not message_text:
-            return
-        
-        logger.info(f"📌 Pinned message in {group_name} ({group_id})")
-        
-        # Process message to detect CAs
-        source_info = f"{group_name} (Pinned)"
-        ca_results = self.detector.process_message(message_text, source_info)
-        
-        # Send notifications for each CA
-        for ca_data in ca_results:
-            await self.send_notification(ca_data, source_info, message_text)
-        
-    except Exception as e:
-        logger.error(f"❌ Error handling pinned message by ID: {e}")
+            # Extract message text
+            message_text = message.text or message.message or ""
+            if not message_text and message.caption:
+                message_text = message.caption
+                
+            # Skip empty messages
+            if not message_text:
+                return
+            
+            logger.info(f"📌 Pinned message in {group_name} ({group_id})")
+            
+            # Process message to detect CAs
+            source_info = f"{group_name} (Pinned)"
+            ca_results = self.detector.process_message(message_text, source_info)
+            
+            # Send notifications for each CA
+            for ca_data in ca_results:
+                await self.send_notification(ca_data, source_info, message_text)
+            
+        except Exception as e:
+            logger.error(f"❌ Error handling pinned message by ID: {e}")
     
     async def start_monitoring(self):
         """Start monitoring channels and groups"""
