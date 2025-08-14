@@ -1,5 +1,8 @@
 import re
-import validators
+try:
+    import validators
+except ImportError:
+    validators = None
 from loguru import logger
 from config import config
 
@@ -40,7 +43,7 @@ class CADetector:
         valid_addresses = []
         for addr in addresses:
             # Crude validation: most Solana addresses are 32-44 chars, base58
-            if validators.length(addr, min=32, max=44) and self._is_base58(addr):
+            if self._validate_address_length(addr) and self._is_base58(addr):
                 valid_addresses.append(addr)
         
         self.stats['addresses_found'] += len(valid_addresses)
@@ -52,6 +55,12 @@ class CADetector:
             # Base58 allowed chars
             return all(c in '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz' for c in value)
         except:
+            return False
+    
+    def _validate_address_length(self, addr: str) -> bool:
+        try:
+            return 32 <= len(addr) <= 44
+        except Exception:
             return False
     
     def detect_platform(self, text, addresses):
@@ -81,6 +90,8 @@ class CADetector:
             
             # Only count native if enabled
             elif config.ENABLE_NATIVE:
+                platform = "native"
+                confidence = max(confidence, 0.6)
                 self.stats['native_detected'] += 1
             else:
                 continue  # Skip this address if native detection disabled
