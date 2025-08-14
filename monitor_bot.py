@@ -19,7 +19,8 @@ class TelegramMonitorBot:
         self.heartbeat_interval = 60  # Seconds
         self.entity_details = {
             'groups': {},
-            'channels': {}
+            'channels': {},
+            'users': {}
         }
         self.running = False
         self.start_time = datetime.now()
@@ -67,6 +68,27 @@ class TelegramMonitorBot:
                 except Exception as e:
                     logger.warning(f"⚠️ Could not load channel {channel_id}: {e}")
             
+            # Load users to monitor
+            for user_id in getattr(config, 'MONITOR_USERS', []):
+                try:
+                    user = await self.client.get_entity(user_id)
+                    name = getattr(user, 'username', None) or getattr(user, 'first_name', 'Unknown')
+                    self.entity_details['users'][str(user_id)] = name
+                    logger.info(f"✅ Loaded user: {name} ({user_id})")
+                except Exception as e:
+                    logger.warning(f"⚠️ Could not load user {user_id}: {e}")
+
+            # Also resolve usernames if provided
+            for username in getattr(config, 'MONITOR_USER_USERNAMES', []):
+                try:
+                    user = await self.client.get_entity(username)
+                    user_id = user.id
+                    name = getattr(user, 'username', None) or getattr(user, 'first_name', 'Unknown')
+                    self.entity_details['users'][str(user_id)] = name
+                    logger.info(f"✅ Resolved user: {name} ({user_id}) from @{username}")
+                except Exception as e:
+                    logger.warning(f"⚠️ Could not resolve user @{username}: {e}")
+            
             # Save updated details
             config.save_entity_details(self.entity_details)
             
@@ -75,7 +97,8 @@ class TelegramMonitorBot:
             # Initialize with default values if failed
             self.entity_details = {
                 'groups': {str(id): f"Group {id}" for id in config.MONITOR_GROUPS},
-                'channels': {str(id): f"Channel {id}" for id in config.MONITOR_CHANNELS}
+                'channels': {str(id): f"Channel {id}" for id in config.MONITOR_CHANNELS},
+                'users': {str(id): f"User {id}" for id in getattr(config, 'MONITOR_USERS', [])}
             }
     
     async def send_notification(self, ca_data, source_info, message_text):
@@ -233,6 +256,45 @@ class TelegramMonitorBot:
             async def channel_handler(event):
                 await self.handle_new_channel_message(event)
             
+            # Monitor new messages from specific users (in any chat)
+            monitor_user_ids = list({int(uid) for uid in self.entity_details['users'].keys()})
+            if monitor_user_ids:
+                @self.client.on(events.NewMessage(from_users=monitor_user_ids))
+                async def user_message_handler(event):
+                    try:
+                        sender = await event.get_sender()
+                        name = getattr(sender, 'username', None) or getattr(sender, 'first_name', 'Unknown')
+                        chat = await event.get_chat()
+                        chat_name = getattr(chat, 'title', None) or getattr(chat, 'first_name', 'Unknown')
+                        text = event.message.text or event.message.message or ''
+                        logger.info(f"👤 New message from monitored user {name} ({sender.id}) in {chat_name}")
+
+                        # Process for CA detection as well
+                        source_info = f"{name} (User) in {chat_name}"
+                        ca_results = self.detector.process_message(text, source_info)
+                        for ca_data in ca_results:
+                            await self.send_notification(ca_data, source_info, text)
+                    except Exception as e:
+                        logger.error(f"❌ Error in user_message_handler: {e}")
+
+            # Optional: attempt to listen for user updates (limited by Telegram privacy)
+            try:
+                @self.client.on(events.UserUpdate())
+                async def user_update_handler(event):
+                    try:
+                        user = await event.get_user()
+                        if not user:
+                            return
+                        if str(user.id) not in self.entity_details['users']:
+                            return
+                        # We will log basic updates
+                        logger.info(f"ℹ️ User update for monitored user {self.entity_details['users'][str(user.id)]} ({user.id})")
+                    except Exception as e:
+                        logger.error(f"❌ Error in user_update_handler: {e}")
+            except Exception:
+                # Not all Telethon versions expose UserUpdate in events
+                pass
+            
             # Method 1: Watch for pin notifications using ChatAction
             # Note: Requires recent Telethon version
             try:
@@ -354,6 +416,10 @@ async def handle_pinned_message_by_id(self, chat_id, message):
             # Log monitored entities
             logger.info(f"👥 Monitoring {len(config.MONITOR_GROUPS)} groups for pinned messages")
             logger.info(f"📢 Monitoring {len(config.MONITOR_CHANNELS)} channels for new messages")
+            if hasattr(config, 'MONITOR_USERS') and config.MONITOR_USERS:
+                logger.info(f"👤 Monitoring {len(config.MONITOR_USERS)} users for activity")
+            if hasattr(config, 'MONITOR_USER_USERNAMES') and config.MONITOR_USER_USERNAMES:
+                logger.info(f"👤 Monitoring usernames: {', '.join(config.MONITOR_USER_USERNAMES)}")
             
             # Set running flag for heartbeat
             self.running = True
@@ -361,6 +427,10 @@ async def handle_pinned_message_by_id(self, chat_id, message):
             
             # Start heartbeat in background
             asyncio.create_task(self.heartbeat())
+            
+            # Start user activity tracker (if enabled)
+            if self.entity_details.get('users'):
+                asyncio.create_task(self.monitor_user_activity())
             
             # Notify owner
             try:
@@ -434,6 +504,38 @@ async def main():
     # Create and run bot
     bot = TelegramMonitorBot()
     await bot.run()
+
+    async def monitor_user_activity(self):
+        """Periodically monitor activity of specific users"""
+        last_status = {}
+        while self.running:
+            try:
+                for user_id_str, display_name in list(self.entity_details.get('users', {}).items()):
+                    try:
+                        user_id = int(user_id_str)
+                        user = await self.client.get_entity(user_id)
+                        # Build status snapshot
+                        status_snapshot = {
+                            'username': getattr(user, 'username', None),
+                            'first_name': getattr(user, 'first_name', None),
+                            'last_name': getattr(user, 'last_name', None),
+                            'photo': getattr(getattr(user, 'photo', None), 'photo_id', None),
+                            'status': getattr(user, 'status', None).__class__.__name__ if getattr(user, 'status', None) else None,
+                        }
+                        prev = last_status.get(user_id)
+                        if prev != status_snapshot:
+                            # Log change
+                            logger.info(f"👀 User activity change: {display_name} ({user_id}) -> {status_snapshot}")
+                            last_status[user_id] = status_snapshot
+                    except Exception as e:
+                        logger.debug(f"⚠️ Could not fetch user {user_id_str}: {e}")
+                # Sleep before next poll
+                await asyncio.sleep(120)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"❌ Error in monitor_user_activity: {e}")
+                await asyncio.sleep(60)
 
 if __name__ == "__main__":
     asyncio.run(main())

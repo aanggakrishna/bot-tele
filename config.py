@@ -16,6 +16,10 @@ class Config:
     MONITOR_GROUPS = [int(x.strip()) for x in os.getenv('MONITOR_GROUPS', '').split(',') if x.strip()]
     MONITOR_CHANNELS = [int(x.strip()) for x in os.getenv('MONITOR_CHANNELS', '').split(',') if x.strip()]
     
+    # Monitor Users Configuration
+    MONITOR_USERS = [int(x.strip()) for x in os.getenv('MONITOR_USERS', '').split(',') if x.strip()]
+    MONITOR_USER_USERNAMES = [x.strip() for x in os.getenv('MONITOR_USER_USERNAMES', '').split(',') if x.strip()]
+    
     # Bot Configuration
     BOT_ENABLED = os.getenv('BOT_ENABLED', 'true').lower() == 'true'
     
@@ -40,6 +44,8 @@ class Config:
     ENABLE_MOONSHOT = os.getenv('ENABLE_MOONSHOT', 'true').lower() == 'true'
     ENABLE_RAYDIUM = os.getenv('ENABLE_RAYDIUM', 'true').lower() == 'true'
     ENABLE_BIRDEYE = os.getenv('ENABLE_BIRDEYE', 'true').lower() == 'true'
+    # Also enable/disable native Solana address detection
+    ENABLE_NATIVE = os.getenv('ENABLE_NATIVE', 'true').lower() == 'true'
     
     # Entity details cache
     _entity_details = None
@@ -51,16 +57,25 @@ class Config:
                 if os.path.exists('entity_details.json'):
                     with open('entity_details.json', 'r') as f:
                         self._entity_details = json.load(f)
+                    # Ensure keys exist
+                    if 'groups' not in self._entity_details:
+                        self._entity_details['groups'] = {str(id): f"Group {id}" for id in self.MONITOR_GROUPS}
+                    if 'channels' not in self._entity_details:
+                        self._entity_details['channels'] = {str(id): f"Channel {id}" for id in self.MONITOR_CHANNELS}
+                    if 'users' not in self._entity_details:
+                        self._entity_details['users'] = {str(id): f"User {id}" for id in getattr(self, 'MONITOR_USERS', [])}
                 else:
                     self._entity_details = {
                         'groups': {str(id): f"Group {id}" for id in self.MONITOR_GROUPS},
-                        'channels': {str(id): f"Channel {id}" for id in self.MONITOR_CHANNELS}
+                        'channels': {str(id): f"Channel {id}" for id in self.MONITOR_CHANNELS},
+                        'users': {str(id): f"User {id}" for id in getattr(self, 'MONITOR_USERS', [])}
                     }
             except Exception as e:
                 logger.error(f"❌ Error loading entity details: {e}")
                 self._entity_details = {
                     'groups': {str(id): f"Group {id}" for id in self.MONITOR_GROUPS},
-                    'channels': {str(id): f"Channel {id}" for id in self.MONITOR_CHANNELS}
+                    'channels': {str(id): f"Channel {id}" for id in self.MONITOR_CHANNELS},
+                    'users': {str(id): f"User {id}" for id in getattr(self, 'MONITOR_USERS', [])}
                 }
         return self._entity_details
     
