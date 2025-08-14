@@ -13,7 +13,7 @@ API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 OWNER_ID = int(os.getenv("OWNER_ID"))       # Saved message
 TO_USER_ID = int(os.getenv("TO_USER_ID"))   # Hanya CA
-MONITOR_CHANNELS = [int(c) for c in os.getenv("MONITOR_CHANNELS").split(",") if c.strip()]
+MONITOR_CHANNELS = [int(c) for c in os.getenv("MONITOR_CHANNELS", "").split(",") if c.strip()]
 
 # --- Logging ke file ---
 logging.basicConfig(
