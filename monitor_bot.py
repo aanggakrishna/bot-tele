@@ -249,82 +249,89 @@ class TelegramMonitorBot:
                 await asyncio.sleep(10)
     
     async def setup_handlers(self):
-        """Setup event handlers"""
+        """Setup event handlers based on enabled monitoring flags"""
         try:
-            # Monitor new messages in channels
-            @self.client.on(events.NewMessage(chats=config.MONITOR_CHANNELS))
-            async def channel_handler(event):
-                await self.handle_new_channel_message(event)
+            # Monitor new messages in channels (if enabled)
+            if config.ENABLE_CHANNEL_MONITORING and config.MONITOR_CHANNELS:
+                @self.client.on(events.NewMessage(chats=config.MONITOR_CHANNELS))
+                async def channel_handler(event):
+                    await self.handle_new_channel_message(event)
+                logger.info("✅ Channel monitoring handlers registered")
             
-            # Monitor new messages from specific users (in any chat)
-            monitor_user_ids = list({int(uid) for uid in self.entity_details['users'].keys()})
-            if monitor_user_ids:
-                @self.client.on(events.NewMessage(from_users=monitor_user_ids))
-                async def user_message_handler(event):
-                    try:
-                        sender = await event.get_sender()
-                        name = getattr(sender, 'username', None) or getattr(sender, 'first_name', 'Unknown')
-                        chat = await event.get_chat()
-                        chat_name = getattr(chat, 'title', None) or getattr(chat, 'first_name', 'Unknown')
-                        text = event.message.text or event.message.message or ''
-                        logger.info(f"👤 New message from monitored user {name} ({sender.id}) in {chat_name}")
-
-                        # Process for CA detection as well
-                        source_info = f"{name} (User) in {chat_name}"
-                        ca_results = self.detector.process_message(text, source_info)
-                        for ca_data in ca_results:
-                            await self.send_notification(ca_data, source_info, text)
-                    except Exception as e:
-                        logger.error(f"❌ Error in user_message_handler: {e}")
-
-            # Optional: attempt to listen for user updates (limited by Telegram privacy)
-            try:
-                @self.client.on(events.UserUpdate())
-                async def user_update_handler(event):
-                    try:
-                        user = await event.get_user()
-                        if not user:
-                            return
-                        if str(user.id) not in self.entity_details['users']:
-                            return
-                        # We will log basic updates
-                        logger.info(f"ℹ️ User update for monitored user {self.entity_details['users'][str(user.id)]} ({user.id})")
-                    except Exception as e:
-                        logger.error(f"❌ Error in user_update_handler: {e}")
-            except Exception:
-                # Not all Telethon versions expose UserUpdate in events
-                pass
-            
-            # Method 1: Watch for pin notifications using ChatAction
-            # Note: Requires recent Telethon version
-            try:
-                @self.client.on(events.ChatAction(chats=config.MONITOR_GROUPS))
-                async def action_handler(event):
-                    if hasattr(event, 'action') and hasattr(event.action, 'message'):
-                        # This is likely a pin event
+            # Monitor new messages from specific users (if enabled)
+            if config.ENABLE_USER_MONITORING:
+                monitor_user_ids = list({int(uid) for uid in self.entity_details['users'].keys()})
+                if monitor_user_ids:
+                    @self.client.on(events.NewMessage(from_users=monitor_user_ids))
+                    async def user_message_handler(event):
                         try:
-                            pinned_msg_id = event.action.message.id
-                            pinned_msg = await self.client.get_messages(event.chat_id, ids=pinned_msg_id)
-                            if pinned_msg:
-                                await self.handle_pinned_message_by_id(event.chat_id, pinned_msg)
+                            sender = await event.get_sender()
+                            name = getattr(sender, 'username', None) or getattr(sender, 'first_name', 'Unknown')
+                            chat = await event.get_chat()
+                            chat_name = getattr(chat, 'title', None) or getattr(chat, 'first_name', 'Unknown')
+                            text = event.message.text or event.message.message or ''
+                            logger.info(f"👤 New message from monitored user {name} ({sender.id}) in {chat_name}")
+
+                            # Process for CA detection as well
+                            source_info = f"{name} (User) in {chat_name}"
+                            ca_results = self.detector.process_message(text, source_info)
+                            for ca_data in ca_results:
+                                await self.send_notification(ca_data, source_info, text)
                         except Exception as e:
-                            logger.error(f"❌ Error in action handler: {e}")
-            except Exception as e:
-                logger.warning(f"⚠️ ChatAction handler setup failed: {e}")
+                            logger.error(f"❌ Error in user_message_handler: {e}")
+
+                    # Optional: attempt to listen for user updates (limited by Telegram privacy)
+                    try:
+                        @self.client.on(events.UserUpdate())
+                        async def user_update_handler(event):
+                            try:
+                                user = await event.get_user()
+                                if not user:
+                                    return
+                                if str(user.id) not in self.entity_details['users']:
+                                    return
+                                # We will log basic updates
+                                logger.info(f"ℹ️ User update for monitored user {self.entity_details['users'][str(user.id)]} ({user.id})")
+                            except Exception as e:
+                                logger.error(f"❌ Error in user_update_handler: {e}")
+                    except Exception:
+                        # Not all Telethon versions expose UserUpdate in events
+                        pass
+                    logger.info("✅ User monitoring handlers registered")
             
-            # Method 2: Check message pinned status in new & edited messages
-            @self.client.on(events.NewMessage(chats=config.MONITOR_GROUPS))
-            async def new_message_handler(event):
-                if hasattr(event.message, 'pinned') and event.message.pinned:
-                    await self.handle_pinned_message(event)
-            
-            @self.client.on(events.MessageEdited(chats=config.MONITOR_GROUPS))
-            async def edit_handler(event):
-                if hasattr(event.message, 'pinned') and event.message.pinned:
-                    await self.handle_pinned_message(event)
-            
-            # Method 3: Periodically check pinned messages
-            self.check_pins_task = asyncio.create_task(self.periodic_pin_check())
+            # Group/pinned message monitoring (if enabled)
+            if config.ENABLE_GROUP_MONITORING and config.MONITOR_GROUPS:
+                # Method 1: Watch for pin notifications using ChatAction
+                # Note: Requires recent Telethon version
+                try:
+                    @self.client.on(events.ChatAction(chats=config.MONITOR_GROUPS))
+                    async def action_handler(event):
+                        if hasattr(event, 'action') and hasattr(event.action, 'message'):
+                            # This is likely a pin event
+                            try:
+                                pinned_msg_id = event.action.message.id
+                                pinned_msg = await self.client.get_messages(event.chat_id, ids=pinned_msg_id)
+                                if pinned_msg:
+                                    await self.handle_pinned_message_by_id(event.chat_id, pinned_msg)
+                            except Exception as e:
+                                logger.error(f"❌ Error in action handler: {e}")
+                except Exception as e:
+                    logger.warning(f"⚠️ ChatAction handler setup failed: {e}")
+                
+                # Method 2: Check message pinned status in new & edited messages
+                @self.client.on(events.NewMessage(chats=config.MONITOR_GROUPS))
+                async def new_message_handler(event):
+                    if hasattr(event.message, 'pinned') and event.message.pinned:
+                        await self.handle_pinned_message(event)
+                
+                @self.client.on(events.MessageEdited(chats=config.MONITOR_GROUPS))
+                async def edit_handler(event):
+                    if hasattr(event.message, 'pinned') and event.message.pinned:
+                        await self.handle_pinned_message(event)
+                
+                # Method 3: Periodically check pinned messages
+                self.check_pins_task = asyncio.create_task(self.periodic_pin_check())
+                logger.info("✅ Group/pinned message monitoring handlers registered")
             
             logger.success("✅ Event handlers registered")
             
@@ -413,13 +420,22 @@ async def handle_pinned_message_by_id(self, chat_id, message):
             # Initialize entity details
             await self.load_entity_details()
             
-            # Log monitored entities
-            logger.info(f"👥 Monitoring {len(config.MONITOR_GROUPS)} groups for pinned messages")
-            logger.info(f"📢 Monitoring {len(config.MONITOR_CHANNELS)} channels for new messages")
-            if hasattr(config, 'MONITOR_USERS') and config.MONITOR_USERS:
-                logger.info(f"👤 Monitoring {len(config.MONITOR_USERS)} users for activity")
-            if hasattr(config, 'MONITOR_USER_USERNAMES') and config.MONITOR_USER_USERNAMES:
-                logger.info(f"👤 Monitoring usernames: {', '.join(config.MONITOR_USER_USERNAMES)}")
+            # Log monitored entities based on flags
+            if config.ENABLE_GROUP_MONITORING:
+                logger.info(f"👥 Monitoring {len(config.MONITOR_GROUPS)} groups for pinned messages")
+            else:
+                logger.info("🚫 Group monitoring disabled")
+            if config.ENABLE_CHANNEL_MONITORING:
+                logger.info(f"📢 Monitoring {len(config.MONITOR_CHANNELS)} channels for new messages")
+            else:
+                logger.info("🚫 Channel monitoring disabled")
+            if config.ENABLE_USER_MONITORING:
+                total_users = len(self.entity_details.get('users', {}))
+                logger.info(f"👤 Monitoring {total_users} users for activity")
+                if hasattr(config, 'MONITOR_USER_USERNAMES') and config.MONITOR_USER_USERNAMES:
+                    logger.info(f"👤 Monitoring usernames: {', '.join(config.MONITOR_USER_USERNAMES)}")
+            else:
+                logger.info("🚫 User monitoring disabled")
             
             # Set running flag for heartbeat
             self.running = True
@@ -429,7 +445,7 @@ async def handle_pinned_message_by_id(self, chat_id, message):
             asyncio.create_task(self.heartbeat())
             
             # Start user activity tracker (if enabled)
-            if self.entity_details.get('users'):
+            if config.ENABLE_USER_MONITORING and self.entity_details.get('users'):
                 asyncio.create_task(self.monitor_user_activity())
             
             # Notify owner
@@ -491,20 +507,6 @@ async def handle_pinned_message_by_id(self, chat_id, message):
             # Clean shutdown
             await self.stop_monitoring()
 
-# For direct execution
-async def main():
-    """Main entry point"""
-    logger.info("🚀 Starting Solana CA Monitor Bot")
-    
-    # Check if bot is enabled
-    if not config.BOT_ENABLED:
-        logger.warning("⚠️ Bot is disabled in config. Set BOT_ENABLED=true to enable.")
-        return
-    
-    # Create and run bot
-    bot = TelegramMonitorBot()
-    await bot.run()
-
     async def monitor_user_activity(self):
         """Periodically monitor activity of specific users"""
         last_status = {}
@@ -536,6 +538,42 @@ async def main():
             except Exception as e:
                 logger.error(f"❌ Error in monitor_user_activity: {e}")
                 await asyncio.sleep(60)
+
+# For direct execution
+async def main():
+    """Main entry point"""
+    logger.info("🚀 Starting Solana CA Monitor Bot")
+    
+    # Check if bot is enabled
+    if not config.BOT_ENABLED:
+        logger.warning("⚠️ Bot is disabled in config. Set BOT_ENABLED=true to enable.")
+        return
+    
+    # Create and run bot
+    bot = TelegramMonitorBot()
+
+    # Optional: interactive mode selection at startup
+    if getattr(config, 'SELECT_MODE_ON_STARTUP', False):
+        print("Pilih mode monitoring:")
+        print("1) Hanya User")
+        print("2) Hanya Channel/Group")
+        print("3) Keduanya")
+        choice = input("Masukkan pilihan (1/2/3): ").strip()
+        if choice == '1':
+            config.ENABLE_USER_MONITORING = True
+            config.ENABLE_CHANNEL_MONITORING = False
+            config.ENABLE_GROUP_MONITORING = False
+        elif choice == '2':
+            config.ENABLE_USER_MONITORING = False
+            config.ENABLE_CHANNEL_MONITORING = True
+            config.ENABLE_GROUP_MONITORING = True
+        else:
+            config.ENABLE_USER_MONITORING = True
+            config.ENABLE_CHANNEL_MONITORING = True
+            config.ENABLE_GROUP_MONITORING = True
+        logger.info(f"Mode dipilih: {choice}")
+
+    await bot.run()
 
 if __name__ == "__main__":
     asyncio.run(main())

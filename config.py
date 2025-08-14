@@ -23,6 +23,12 @@ class Config:
     # Bot Configuration
     BOT_ENABLED = os.getenv('BOT_ENABLED', 'true').lower() == 'true'
     
+    # Monitoring Control Flags
+    ENABLE_CHANNEL_MONITORING = os.getenv('ENABLE_CHANNEL_MONITORING', 'true').lower() == 'true'
+    ENABLE_GROUP_MONITORING = os.getenv('ENABLE_GROUP_MONITORING', 'true').lower() == 'true'
+    ENABLE_USER_MONITORING = os.getenv('ENABLE_USER_MONITORING', 'true').lower() == 'true'
+    SELECT_MODE_ON_STARTUP = os.getenv('SELECT_MODE_ON_STARTUP', 'false').lower() == 'true'
+    
     # Solana Configuration
     RPC_URL = os.getenv('RPC_URL', 'https://api.mainnet-beta.solana.com')
     SOLANA_PRIVATE_KEY_BASE58 = os.getenv('SOLANA_PRIVATE_KEY_BASE58')
