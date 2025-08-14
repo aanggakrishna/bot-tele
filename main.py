@@ -199,12 +199,17 @@ async def main():
     logging.info("Bot started")
     # --- Test kirim pesan ke TO_USER_ID di startup ---
     try:
+        # Coba resolve entity dulu
+        print(f"[DEBUG] Resolving entity for TO_USER_ID {TO_USER_ID}")
+        to_user_entity = await client.get_entity(TO_USER_ID)
+        print(f"[DEBUG] Entity resolved: {getattr(to_user_entity, 'username', 'No username')} ({getattr(to_user_entity, 'first_name', 'No name')})")
+        
         test_msg = "[TEST] Bot started. Jika kamu menerima pesan ini, pengiriman ke TO_USER_ID OK."
         print(f"[DEBUG] Sending startup test to TO_USER_ID {TO_USER_ID}")
-        await client.send_message(TO_USER_ID, test_msg)
+        await client.send_message(to_user_entity, test_msg)
         print(f"[DEBUG] Startup test sent to TO_USER_ID {TO_USER_ID}")
     except Exception as e:
-        warn = f"⚠️ Gagal kirim pesan startup ke TO_USER_ID {TO_USER_ID}: {e}"
+        warn = f"⚠️ Gagal kirim pesan startup ke TO_USER_ID {TO_USER_ID}: {e}\n\n💡 Solusi:\n1. Pastikan akun ini pernah chat dengan user {TO_USER_ID}\n2. Atau user {TO_USER_ID} harus mengirim pesan ke akun ini dulu\n3. Atau gunakan username (@username) jika ada"
         print(warn)
         logging.error(warn)
         try:
