@@ -135,13 +135,20 @@ class CADetector:
         if not addresses:
             return []
         
+        print(f"[DEBUG] CADetector found addresses: {addresses}")
+        
         # Detect platform for each address
         results = self.detect_platform(text, addresses)
+        
+        print(f"[DEBUG] Platform detection results: {results}")
+        print(f"[DEBUG] Config - ENABLE_NATIVE: {config.ENABLE_NATIVE}, ENABLE_PUMPFUN: {config.ENABLE_PUMPFUN}")
         
         # Log results
         if results:
             logger.info(f"📊 Found {len(results)} Solana addresses from {source or 'unknown'}")
             for ca in results:
                 logger.debug(f"🔍 {ca['platform']} CA: {ca['address']}")
+        else:
+            print(f"[DEBUG] No results after platform detection - addresses were filtered out")
         
         return results
