@@ -552,11 +552,11 @@ async def main():
 
     # Optional: interactive mode selection at startup
     if getattr(config, 'SELECT_MODE_ON_STARTUP', False):
-        print("Pilih mode monitoring:")
-        print("1) Hanya User")
-        print("2) Hanya Channel/Group")
-        print("3) Keduanya")
-        choice = input("Masukkan pilihan (1/2/3): ").strip()
+        print("Select monitoring mode:")
+        print("1) Users only")
+        print("2) Channels/Groups only")
+        print("3) Both")
+        choice = input("Enter your choice (1/2/3): ").strip()
         if choice == '1':
             config.ENABLE_USER_MONITORING = True
             config.ENABLE_CHANNEL_MONITORING = False
@@ -565,11 +565,16 @@ async def main():
             config.ENABLE_USER_MONITORING = False
             config.ENABLE_CHANNEL_MONITORING = True
             config.ENABLE_GROUP_MONITORING = True
-        else:
+        elif choice == '3':
             config.ENABLE_USER_MONITORING = True
             config.ENABLE_CHANNEL_MONITORING = True
             config.ENABLE_GROUP_MONITORING = True
-        logger.info(f"Mode dipilih: {choice}")
+        else:
+            print("Invalid choice. Defaulting to Both.")
+            config.ENABLE_USER_MONITORING = True
+            config.ENABLE_CHANNEL_MONITORING = True
+            config.ENABLE_GROUP_MONITORING = True
+        logger.info(f"Mode selected: {choice}")
 
     await bot.run()
 

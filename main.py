@@ -13,7 +13,7 @@ load_dotenv()
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 OWNER_ID = int(os.getenv("OWNER_ID"))       # Saved message
-TO_USER_ID = int(os.getenv("TO_USER_ID"))   # Hanya CA
+TO_USER_ID = int(os.getenv("TO_USER_ID"))   # CA only
 MONITOR_CHANNELS = [int(c) for c in os.getenv("MONITOR_CHANNELS", "").split(",") if c.strip()]
 # Users to monitor (IDs)
 MONITOR_USERS = [int(u) for u in os.getenv("MONITOR_USERS", "").split(",") if u.strip()]
@@ -84,7 +84,7 @@ async def handle_channel_message(event):
                 await client.send_message(TO_USER_ID, only_ca)
                 print(f"[DEBUG] CA sent successfully to TO_USER_ID {TO_USER_ID}")
             except Exception as send_err:
-                warn = f"⚠️ Gagal kirim CA ke TO_USER_ID {TO_USER_ID}: {send_err}"
+                warn = f"⚠️ Failed to send CA to TO_USER_ID {TO_USER_ID}: {send_err}"
                 print(warn)
                 logging.error(warn)
                 try:
@@ -163,7 +163,7 @@ if MONITOR_USERS:
                     await client.send_message(TO_USER_ID, only_ca)
                     print(f"[DEBUG] CA sent successfully to TO_USER_ID {TO_USER_ID}")
                 except Exception as send_err:
-                    warn = f"⚠️ Gagal kirim CA ke TO_USER_ID {TO_USER_ID}: {send_err}"
+                    warn = f"⚠️ Failed to send CA to TO_USER_ID {TO_USER_ID}: {send_err}"
                     print(warn)
                     logging.error(warn)
                     try:
@@ -222,12 +222,12 @@ async def main():
         to_user_entity = await client.get_entity(TO_USER_ID)
         print(f"[DEBUG] Entity resolved: {getattr(to_user_entity, 'username', 'No username')} ({getattr(to_user_entity, 'first_name', 'No name')})")
         
-        test_msg = "[TEST] Bot started. Jika kamu menerima pesan ini, pengiriman ke TO_USER_ID OK."
+        test_msg = "[TEST] Bot started. If you receive this message, sending to TO_USER_ID is OK."
         print(f"[DEBUG] Sending startup test to TO_USER_ID {TO_USER_ID}")
         await client.send_message(to_user_entity, test_msg)
         print(f"[DEBUG] Startup test sent to TO_USER_ID {TO_USER_ID}")
     except Exception as e:
-        warn = f"⚠️ Gagal kirim pesan startup ke TO_USER_ID {TO_USER_ID}: {e}\n\n💡 Solusi:\n1. Pastikan akun ini pernah chat dengan user {TO_USER_ID}\n2. Atau user {TO_USER_ID} harus mengirim pesan ke akun ini dulu\n3. Atau gunakan username (@username) jika ada"
+        warn = f"⚠️ Failed to send startup message to TO_USER_ID {TO_USER_ID}: {e}\n\n💡 Tips:\n1. Make sure this account has chatted with the user {TO_USER_ID}\n2. Or the user {TO_USER_ID} must send a message to this account first\n3. Or use the username (@username) if available"
         print(warn)
         logging.error(warn)
         try:
