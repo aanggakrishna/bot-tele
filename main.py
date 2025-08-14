@@ -100,6 +100,15 @@ async def handle_channel_message(event):
             print("===================================")
             logging.info(f"✅ CA detected from {sender_name} in {chat_title}: {only_ca}")
         else:
+            try:
+                raw_matches = CA_REGEX.findall(text_to_check)
+                if raw_matches:
+                    print(f"[DEBUG] Base58-like matches (pre-filter): {raw_matches}")
+                else:
+                    preview = text_to_check[:200].replace("\n", " ")
+                    print(f"[DEBUG] No base58-like match. Text preview: {preview}")
+            except Exception as dbg_err:
+                print(f"[DEBUG] Error while debug matching: {dbg_err}")
             print(f"[INFO] No CA found in message from {chat_title}")
             logging.info(f"No CA in message from {chat_title}")
 
@@ -164,6 +173,15 @@ if MONITOR_USERS:
 
                 logging.info(f"✅ CA from monitored user {sender_name} in {chat_title}: {only_ca}")
             else:
+                try:
+                    raw_matches = CA_REGEX.findall(text_to_check)
+                    if raw_matches:
+                        print(f"[DEBUG] Base58-like matches (pre-filter): {raw_matches}")
+                    else:
+                        preview = text_to_check[:200].replace("\n", " ")
+                        print(f"[DEBUG] No base58-like match. Text preview: {preview}")
+                except Exception as dbg_err:
+                    print(f"[DEBUG] Error while debug matching: {dbg_err}")
                 logging.info(f"No CA in message from monitored user {sender_name} in {chat_title}")
         except Exception as e:
             print(f"❌ Error (user handler): {e}")
