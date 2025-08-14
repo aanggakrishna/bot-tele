@@ -10,7 +10,7 @@ class CADetector:
     SOLANA_ADDRESS_PATTERN = r'\b[1-9A-HJ-NP-Za-km-z]{32,44}\b'
     
     # Known domains for platforms
-    PUMPFUN_DOMAINS = ['pumpfun.io', 'pumpfun.fun']
+    PUMPFUN_DOMAINS = ['pump.fun', 'www.pump.fun', 'pumpfun.io']
     MOONSHOT_DOMAINS = ['moonshot.watch', 'moonshotwatch.io']
     
     def __init__(self):

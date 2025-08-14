@@ -39,7 +39,9 @@ CA_REGEX = re.compile(r"\b[1-9A-HJ-NP-Za-km-z]{32,44}\b")
 async def handle_channel_message(event):
     try:
         msg = event.message
-        text = msg.message or ''
+        text = (getattr(msg, 'message', None) or getattr(msg, 'text', None) or '')
+        if not text and getattr(msg, 'caption', None):
+            text = msg.caption
         sender = await msg.get_sender()
         chat = await event.get_chat()
         sender_name = sender.username or sender.first_name or "Unknown"
@@ -49,7 +51,18 @@ async def handle_channel_message(event):
         await client.send_message(OWNER_ID, f"📩 New message from {chat_title}:\n\n{text}")
 
         # 2. Deteksi CA menggunakan CADetector (lebih akurat)
-        ca_results = detector.process_message(text, f"{chat_title} (Channel)")
+        #    Tambahkan URL dari tombol inline (jika ada) agar deteksi menyertakan link PumpFun dsb.
+        urls = []
+        try:
+            if getattr(msg, 'buttons', None):
+                for row in msg.buttons:
+                    for b in row:
+                        if hasattr(b, 'url') and b.url:
+                            urls.append(b.url)
+        except Exception:
+            pass
+        text_to_check = text + (" " + " ".join(urls) if urls else "")
+        ca_results = detector.process_message(text_to_check, f"{chat_title} (Channel)")
         if ca_results:
             # 3a. Kirim deteksi CA ke OWNER (detail per platform)
             for ca in ca_results:
@@ -89,14 +102,26 @@ if MONITOR_USERS:
     async def handle_user_message(event):
         try:
             msg = event.message
-            text = msg.message or ''
+            text = (getattr(msg, 'message', None) or getattr(msg, 'text', None) or '')
+            if not text and getattr(msg, 'caption', None):
+                text = msg.caption
             sender = await msg.get_sender()
             chat = await event.get_chat()
             sender_name = sender.username or sender.first_name or "Unknown"
             chat_title = getattr(chat, 'title', getattr(chat, 'first_name', f"Chat {event.chat_id}"))
 
             # Deteksi CA dengan CADetector
-            ca_results = detector.process_message(text, f"{sender_name} (User) in {chat_title}")
+            urls = []
+            try:
+                if getattr(msg, 'buttons', None):
+                    for row in msg.buttons:
+                        for b in row:
+                            if hasattr(b, 'url') and b.url:
+                                urls.append(b.url)
+            except Exception:
+                pass
+            text_to_check = text + (" " + " ".join(urls) if urls else "")
+            ca_results = detector.process_message(text_to_check, f"{sender_name} (User) in {chat_title}")
             if ca_results:
                 # Kirim detail ke OWNER (Saved Messages)
                 for ca in ca_results:
